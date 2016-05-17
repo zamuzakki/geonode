@@ -69,8 +69,8 @@ class AnalysisCreateView(CreateView):
                 'categories': ['population', 'road', 'structure'],
                 'list_titles': [
                     'Select a population layer',
-                    'Select a structure layer',
                     'Select a roads layer',
+                    'Select a structure layer',
                 ]
             },
             {
@@ -487,7 +487,7 @@ def download_report(request, analysis_id, data_type='map'):
 
         return HttpResponseServerError()
     except Exception as e:
-        LOGGER.debug(e)
+        LOGGER.exception(e)
         return HttpResponseServerError()
 
 
@@ -505,4 +505,5 @@ def analysis_summary(request, impact_id):
         return render(request, "geosafe/analysis/modal/impact_card.html",
                       context)
     except Exception as e:
+        LOGGER.exception(e)
         return HttpResponseServerError()

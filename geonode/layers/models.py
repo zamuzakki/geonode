@@ -456,6 +456,16 @@ def pre_save_layer(instance, sender, **kwargs):
     if instance.bbox_y1 is None:
         instance.bbox_y1 = 90
 
+    if instance.bbox_x0 > instance.bbox_x1 and instance.bbox_x0 - instance.bbox_x1 < 90:
+        temp = instance.bbox_x0
+        instance.bbox_x0 = instance.bbox_x1
+        instance.bbox_x1 = temp
+
+    if instance.bbox_y0 > instance.bbox_y1:
+        temp = instance.bbox_y0
+        instance.bbox_y0 = instance.bbox_y1
+        instance.bbox_y1 = temp
+
     bbox = [
         instance.bbox_x0,
         instance.bbox_x1,
