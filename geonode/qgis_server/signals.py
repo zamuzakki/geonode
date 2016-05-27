@@ -14,6 +14,7 @@ from geonode.layers.models import Layer
 from geonode.maps.models import Map, MapLayer
 from geonode.layers.utils import create_thumbnail
 from geonode.geoserver.helpers import http_client
+from geonode.qgis_server.gis_tools import set_attributes
 
 
 logger = logging.getLogger("geonode.qgis_server.signals")
@@ -116,14 +117,20 @@ def qgis_server_post_save(instance, sender, **kwargs):
                 )
             )
 
-    # Create the QGIS project
+    # Create the QGIS project. As we can't use the QGIS API in geonode, we
+    # use a QGIS project as a template.
     # Open the QML
     basename, _ = os.path.splitext(qgis_layer.base_layer_path)
     qml_file_path = '%s.qml' % basename
 
     template_items = {
+        # Use for the vector rendering
         'renderer_v2': '',
+
+        # Use for the raster rendering
         'pipe': '',
+
+        # Other XML tags needed in the QGIS project
         'customproperties': '',
         'edittypes': '',
         'labeling': '',
@@ -214,6 +221,9 @@ def qgis_server_post_save(instance, sender, **kwargs):
         'qgis-server-thumbnail', kwargs={'layername': instance.name})
     logger.debug(thumbnail_remote_url)
     create_thumbnail(instance, thumbnail_remote_url, ogc_client=http_client)
+
+    # Attributes
+    set_attributes(instance)
 
 
 def qgis_server_pre_save_maplayer(instance, sender, **kwargs):
