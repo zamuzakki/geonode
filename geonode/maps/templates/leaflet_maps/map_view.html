@@ -318,10 +318,16 @@
                         added_layer.url = layer_url;
                         added_layer.layer = tile_layer;
                         added_layer.visibility = visibility;
+                        added_layer.zIndex = overlay_layers_list.length + 1;
                         overlay_layers[layer_typename] = added_layer;
 
                         // Add to list of overlay layers
                         overlay_layers_list.push(layer_typename);
+
+                        // Set zIndex of the layer
+                        tile_layer.setZIndex(added_layer.zIndex);
+                        console.log(added_layer.zIndex);
+
 
                         // Hide from available layer
                         document.getElementById("option_" + layer_typename).style.display = 'none';
@@ -459,6 +465,7 @@
                 var new_background_layer = background_layers[this.value]['layer'];
                 map.removeLayer(active_background_layer);
                 new_background_layer.addTo(map);
+                new_background_layer.setZIndex(0);
                 active_background_layer = new_background_layer;
             });
         }
