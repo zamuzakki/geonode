@@ -165,13 +165,8 @@
         var map = $("#map");
         var active_background_layer;
 
-        // Storing the overlay layers
-        var overlay_layers = {};
-        var overlay_layers_list = [];
-
-        // Storing the background layers
-        var background_layers = {};
-        var background_layers_list = [];
+        var all_layers = {};
+        var all_layers_list = [];
 
         // Define some default base layers
         var osm = L.tileLayer('http://{s}.tile.osm.org/{z}/{x}/{y}.png', {
@@ -183,31 +178,33 @@
         });
 
         {% if create %}
-            background_layers = {
-                'osm': {
-                    'title': 'OpenStreetMap',
-                    'name': 'osm',
-                    'url': osm._url,
-                    'layer': osm,
-                    'visibility': false,
-                    'group': 'background'
-                },
+            all_layers = {
                 'mapquest': {
                     'title': 'MapQuest',
                     'name': 'mapquest',
                     'url': mapquest._url,
                     'layer': mapquest,
                     'visibility': true,
-                    'group': 'background'
+                    'group': 'background',
+                    'zIndex': 0
+                },
+                'osm': {
+                    'title': 'OpenStreetMap',
+                    'name': 'osm',
+                    'url': osm._url,
+                    'layer': osm,
+                    'visibility': false,
+                    'group': 'background',
+                    'zIndex': 1
                 }
             };
-            background_layers_list.push('mapquest');
-            background_layers_list.push('osm');
+            all_layers_list.push('mapquest');
+            all_layers_list.push('osm');
 
             active_background_layer = mapquest;
         {% else %}
-            background_layers = {};
-            background_layers_list = [];
+            all_layers = {};
+            all_layers_list = [];
         {% endif %}
 
         var w_height = $(window).height();
@@ -228,27 +225,27 @@
 
         function check_box_layer_clicked(check_box) {
             if (check_box.checked) {
-                map.addLayer(overlay_layers[check_box.value].layer);
-                overlay_layers[check_box.value].visibility = true;
+                map.addLayer(all_layers[check_box.value].layer);
+                all_layers[check_box.value].visibility = true;
             } else {
-                if (map.hasLayer(overlay_layers[check_box.value].layer)) {
-                    map.removeLayer(overlay_layers[check_box.value].layer);
-                    overlay_layers[check_box.value].visibility = false;
+                if (map.hasLayer(all_layers[check_box.value].layer)) {
+                    map.removeLayer(all_layers[check_box.value].layer);
+                    all_layers[check_box.value].visibility = false;
                 }
             }
         }
 
         function delete_layer_clicked(button) {
             // Remove layer from the map
-            if (map.hasLayer(overlay_layers[button.value].layer)) {
-                map.removeLayer(overlay_layers[button.value].layer);
+            if (map.hasLayer(all_layers[button.value].layer)) {
+                map.removeLayer(all_layers[button.value].layer);
             }
             // Remove layer from the array
-            delete overlay_layers[button.value];
+            delete all_layers[button.value];
             // Remove layer from map layer list
             remove("li_" + button.value);
             // Remove from list overlay layers
-            remove_from_list(overlay_layers_list, button.value);
+            remove_from_list(all_layers, button.value);
 
             // Show from available layer
             document.getElementById("option_" + button.value).style.display = 'block';
@@ -263,10 +260,10 @@
 
         function add_layer(layer_typename, visibility, layer_order) {
             visibility = typeof visibility !== 'undefined' ? visibility : true;
-            if (layer_typename in overlay_layers) {
+            if (layer_typename in all_layers) {
                 return
             }
-            if (layer_typename in background_layers) {
+            if (layer_typename in all_layers) {
                 return
             }
             if (!layer_typename) {
@@ -319,15 +316,16 @@
                         added_layer.layer = tile_layer;
                         added_layer.visibility = visibility;
                         if (layer_order) {
+                            console.log('Add from layer order: ' + layer_order);
                             added_layer.zIndex = layer_order;
                         } else {
-                            added_layer.zIndex = overlay_layers_list.length + 1;
-
+                            console.log('No layer order, set to : ' + (all_layers_list.length));
+                            added_layer.zIndex = all_layers_list.length;
                         }
-                        overlay_layers[layer_typename] = added_layer;
+                        all_layers[layer_typename] = added_layer;
 
                         // Add to list of overlay layers
-                        overlay_layers_list.push(layer_typename);
+                        all_layers_list.push(layer_typename);
 
                         // Set zIndex of the layer
                         tile_layer.setZIndex(added_layer.zIndex);
@@ -354,43 +352,24 @@
             var layers = [];
             var map_data = {};
 
-            console.log(overlay_layers);
             map_data['sources'] = {};
-            for (i = 0; i < background_layers_list.length; i++) {
-                key = background_layers_list[i];
-                source_token = 'source_' + background_layers[key]['title'];
+            for (i = 0; i < all_layers_list.length; i++) {
+                key = all_layers_list[i];
+                source_token = 'source_' + all_layers[key]['title'];
                 console.log('Adding to layers');
                 console.log(key);
                 layers.push(
                         {
                             'name': key,
-                            'title': background_layers[key]['title'],
-                            'visibility': background_layers[key]['visibility'],
-                            'url': background_layers[key]['url'],
-                            'group': background_layers[key]['group'],
+                            'title': all_layers[key]['title'],
+                            'visibility': all_layers[key]['visibility'],
+                            'url': all_layers[key]['url'],
+                            'group': all_layers[key]['group'],
                             'source': source_token
                         }
                 );
                 map_data['sources'][source_token] = {
-                    'url': background_layers[key]['url']
-                };
-            }
-            for (i = 0; i < overlay_layers_list.length; i++) {
-                key = overlay_layers_list[i];
-                source_token = 'source_' + overlay_layers[key]['title'];
-                console.log('Adding to layers');
-                console.log(key);
-                layers.push(
-                        {
-                            'name': key,
-                            'title': overlay_layers[key]['title'],
-                            'visibility': overlay_layers[key]['visibility'],
-                            'url': overlay_layers[key]['url'],
-                            'source': source_token
-                        }
-                );
-                map_data['sources'][source_token] = {
-                    'url': overlay_layers[key]['url']
+                    'url': all_layers[key]['url']
                 };
             }
             console.log(layers);
@@ -432,6 +411,9 @@
             for (i = 0; i < the_list.length; i++) {
                 var background_layer_name = the_list[i];
                 var background_layer = the_dict[background_layer_name];
+                if (background_layer['group'] != 'background') {
+                    continue;
+                }
                 if (background_layer['visibility'] == "True") {
                     active_background_layer = background_layer;
                     $("#background-layer-list").prepend(
@@ -467,7 +449,7 @@
             }
             // Add radio button listener for background layer
             $('input:radio[name=background-layer]').change(function () {
-                var new_background_layer = background_layers[this.value]['layer'];
+                var new_background_layer = all_layers[this.value]['layer'];
                 map.removeLayer(active_background_layer);
                 new_background_layer.addTo(map);
                 new_background_layer.setZIndex(0);
@@ -492,7 +474,7 @@
             {% endif %}
 
             // Populate radio button for background layer
-            populate_background_layer(background_layers_list, background_layers);
+            populate_background_layer(all_layers_list, all_layers);
 
             // Make sortable
             var list = document.getElementById("layer-list");
@@ -501,14 +483,15 @@
             {% if not create %}
                 {% for layer in map.layers %}
                     if ("{{ layer.group }}" == 'background') {
-                        background_layers_list.push("{{ layer.name }}");
+                        all_layers_list.push("{{ layer.name }}");
                         background_tile = L.tileLayer("{{ layer.ows_url }}");
-                        background_layers["{{ layer.name }}"] = {
+                        all_layers["{{ layer.name }}"] = {
                             'title': '{{ layer.name }}',
                             'url': '{{ layer.ows_url }}',
                             'group': '{{ layer.group }}',
                             'visibility': '{{ layer.visibility }}',
-                            'layer': background_tile
+                            'layer': background_tile,
+                            'zIndex': parseInt("{{ layer.stack_order }}")
                         };
                         if ("{{ layer.visibility }}" == 'True') {
                             background_tile.addTo(map);
@@ -522,7 +505,7 @@
                         {% endif %}
                     }
                 {% endfor %}
-                populate_background_layer(background_layers_list, background_layers);
+                populate_background_layer(all_layers_list, all_layers);
             {% else %}
                 // Check layer parameter in url
                 var qd = {};
