@@ -261,7 +261,7 @@
             }
         }
 
-        function add_layer(layer_typename, visibility) {
+        function add_layer(layer_typename, visibility, layer_order) {
             visibility = typeof visibility !== 'undefined' ? visibility : true;
             if (layer_typename in overlay_layers) {
                 return
@@ -318,7 +318,12 @@
                         added_layer.url = layer_url;
                         added_layer.layer = tile_layer;
                         added_layer.visibility = visibility;
-                        added_layer.zIndex = overlay_layers_list.length + 1;
+                        if (layer_order) {
+                            added_layer.zIndex = layer_order;
+                        } else {
+                            added_layer.zIndex = overlay_layers_list.length + 1;
+
+                        }
                         overlay_layers[layer_typename] = added_layer;
 
                         // Add to list of overlay layers
@@ -509,10 +514,11 @@
                             background_tile.addTo(map);
                         }
                     } else {
+                        console.log("{{ layer.name }} " + "{{ layer.stack_order }}");
                         {% if layer.visibility %}
-                            add_layer("{{ layer.name }}", true);
+                            add_layer("{{ layer.name }}", true, parseInt("{{ layer.stack_order }}"));
                         {% else %}
-                            add_layer("{{ layer.name }}", false);
+                            add_layer("{{ layer.name }}", false, parseInt("{{ layer.stack_order }}"));
                         {% endif %}
                     }
                 {% endfor %}
