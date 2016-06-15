@@ -316,7 +316,6 @@
                         added_layer.layer = tile_layer;
                         added_layer.visibility = visibility;
                         if (layer_order) {
-                            console.log('Add from layer order: ' + layer_order);
                             added_layer.zIndex = layer_order;
                         } else {
                             console.log('No layer order, set to : ' + (all_layers_list.length));
@@ -478,10 +477,68 @@
 
             // Make sortable
             var list = document.getElementById("layer-list");
-            Sortable.create(list); // That's all
+            Sortable.create(list, {
+                onEnd: function (/**Event*/evt) {
+                    console.log(evt.oldIndex);
+                    console.log(evt.newIndex);
+                    console.log(evt.item.id);
+                    if (evt.newIndex == undefined) {
+                        // Move but to the same location.
+                        console.log('new index is undefined, return');
+                        return;
+                    }
+                    var num_background = 0;
+
+                    for (i = 0; i < all_layers_list.length; i++) {
+                        if (all_layers[all_layers_list[i]].group == 'background') {
+                            num_background++;
+                        }
+                    }
+                    var num_overlay = all_layers_list.length - num_background;
+                    var flag_move_up = evt.oldIndex > evt.newIndex;
+                    console.log("is move up " + flag_move_up);
+                    var small_index = evt.oldIndex;
+                    var big_index = evt.newIndex;
+
+                    if (flag_move_up) {
+                        big_index = evt.oldIndex;
+                        small_index = evt.newIndex;
+                    }
+
+                    var layer_list = $("ul[id='layer-list'] li");
+                    for (i = 0; i < layer_list.length; i++) {
+                        var layer_typename = layer_list[i].id.slice(3);
+                        layer = all_layers[layer_typename].layer;
+                        if (i < small_index) {
+                            // pass
+                        } else if (i > big_index) {
+                            // pass
+                        } else if (i == evt.newIndex) {
+                            if (flag_move_up) {
+                                layer.setZIndex(layer.options.zIndex + (big_index - small_index));
+                                console.log("move layer " + layer_typename + " to " + (layer.options.zIndex))
+                            } else {
+                                layer.setZIndex(layer.options.zIndex - (big_index - small_index));
+                                console.log("move layer " + layer_typename + " to " + (layer.options.zIndex))
+                            }
+
+                        } else {
+                            if (flag_move_up) {
+                                layer.setZIndex(layer.options.zIndex - 1);
+                                console.log("move layer " + layer_typename + " to " + (layer.options.zIndex))
+                            } else {
+                                layer.setZIndex(layer.options.zIndex + 1);
+                                console.log("move layer " + layer_typename + " to " + (layer.options.zIndex))
+                            }
+                        }
+
+                    }
+
+                }
+            }); // That's all
 
             {% if not create %}
-                {% for layer in map.layers %}
+                {% for layer in map_layers %}
                     if ("{{ layer.group }}" == 'background') {
                         all_layers_list.push("{{ layer.name }}");
                         background_tile = L.tileLayer("{{ layer.ows_url }}");

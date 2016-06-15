@@ -6,7 +6,7 @@ __copyright__ = 'imajimatika@gmail.com'
 
 
 from django.views.generic import CreateView, DetailView
-from geonode.maps.models import Map
+from geonode.maps.models import Map, MapLayer
 from geonode.layers.models import Layer
 
 
@@ -43,7 +43,8 @@ class MapDetailView(DetailView):
         context = {
             'create': False,
             'layers': layers,
-            'map': Map.objects.get(id=self.kwargs.get("mapid"))
+            'map': Map.objects.get(id=self.kwargs.get("mapid")),
+            'map_layers': MapLayer.objects.filter(map_id=self.kwargs.get("mapid")).order_by('stack_order')
         }
         return context
 
