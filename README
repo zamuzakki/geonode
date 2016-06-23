@@ -24,8 +24,7 @@ For 12.04 with python software properties installed, install the latest stable r
     sudo apt-get update
     sudo apt-get install geonode
 
-If instead, you are interested in doing development on the source code, here are the instructions: http://docs.geonode.org/en/master/tutorials/devel/install_devmode/index.html#install-devmode.
-
+If instead, you are interested in doing development on the source code, here are the instructions: http://docs.geonode.org/en/master/tutorials/devel/devel_env/index.html.
 Docker Usage
 ------------
 
@@ -82,6 +81,9 @@ openSUSE Development Build Instructions::
 
     # Compile GeoServer
     paver setup
+
+    # Initialize database
+    paver sync
     
     # Start the servers
     paver start
@@ -123,6 +125,9 @@ Windows Development Build Instructions::
     
     # Compile GeoServer
     paver setup
+
+    # Initialize database
+    paver sync
     
     # Start the servers
     paver start --java_path=C:/path/to/java/bin/java.exe
@@ -157,6 +162,7 @@ Mac OSX Development Build Instructions::
 
     #Paver handles dependencies for Geonode, first setup (this will download and update your python dependencies - ensure you're in a virtualenv)
     paver setup
+    paver sync
     paver start
     
     # Optional: To generate document thumbnails for PDFs and other ghostscripts file types
