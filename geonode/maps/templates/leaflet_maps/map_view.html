@@ -173,17 +173,18 @@
             attribution: '&copy; <a href="http://osm.org/copyright">OpenStreetMap</a> contributors',
         });
 
-        var mapquest = L.tileLayer('http://otile4.mqcdn.com/tiles/1.0.0/osm/{z}/{x}/{y}.png', {
-            attribution: 'Tiles Courtesy of <a href="http://www.mapquest.com/">MapQuest</a> &mdash; Map data &copy; <a href="http://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+        var OpenMapSurfer_Roads = L.tileLayer('http://korona.geog.uni-heidelberg.de/tiles/roads/x={x}&y={y}&z={z}', {
+            maxZoom: 20,
+            attribution: 'Imagery from <a href="http://giscience.uni-hd.de/">GIScience Research Group @ University of Heidelberg</a> &mdash; Map data &copy; <a href="http://www.openstreetmap.org/copyright">OpenStreetMap</a>'
         });
 
         {% if create %}
             all_layers = {
-                'mapquest': {
-                    'title': 'MapQuest',
-                    'name': 'mapquest',
-                    'url': mapquest._url,
-                    'layer': mapquest,
+                'OpenMapSurfer_Roads': {
+                    'title': 'OpenMapSurfer Roads',
+                    'name': 'OpenMapSurfer_Roads',
+                    'url': OpenMapSurfer_Roads._url,
+                    'layer': OpenMapSurfer_Roads,
                     'visibility': true,
                     'group': 'background',
                     'zIndex': 0
@@ -198,10 +199,10 @@
                     'zIndex': 1
                 }
             };
-            all_layers_list.push('mapquest');
+            all_layers_list.push('OpenMapSurfer_Roads');
             all_layers_list.push('osm');
 
-            active_background_layer = mapquest;
+            active_background_layer = OpenMapSurfer_Roads;
         {% else %}
             all_layers = {};
             all_layers_list = [];
