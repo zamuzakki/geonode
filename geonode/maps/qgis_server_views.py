@@ -12,6 +12,7 @@ from geonode.layers.models import Layer
 
 class MapCreateView(CreateView):
     model = Map
+    fields = '__all__'
     template_name = 'leaflet_maps/map_view.html'
     context_object_name = 'map'
 
