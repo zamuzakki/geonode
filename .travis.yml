@@ -46,7 +46,7 @@ install:
   - sudo update-java-alternatives --set java-8-oracle
   - pip install -r requirements.txt
   - pip install -e . --no-deps
-  - pip install coveralls
+  - pip install codecov
 
 before_script:
   - paver setup
@@ -65,7 +65,7 @@ after_script:
   - paver reset_hard
 
 after_success:
-  - coveralls
+  - codecov
 
 # Commented out until changes are merged upstream.
 #  We don't have to bother geonode core developer.
