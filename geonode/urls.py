@@ -138,9 +138,9 @@ if 'geonode.geoserver' in settings.INSTALLED_APPS:
                             )
 if 'geonode.qgis_server' in settings.INSTALLED_APPS:
     # QGIS Server's urls
-    urlpatterns += patterns('',
-                            (r'', include('geonode.qgis_server.urls')),
-                            )
+    urlpatterns += patterns(
+        '', (r'^qgis-server/', include('geonode.qgis_server.urls')),
+    )
 
 if 'notification' in settings.INSTALLED_APPS:
     urlpatterns += patterns('',
