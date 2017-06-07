@@ -839,7 +839,6 @@ DOWNLOAD_FORMATS_RASTER = [
     'Tiles',
     'GML',
     'GZIP',
-    'ASCII',
     'Zipped All Files'
 ]
 
