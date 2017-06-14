@@ -76,7 +76,7 @@ community."
         }
       },
       "map": {
-        "projection":"EPSG:900913",
+        "projection":"EPSG:3857",
         "units":"m",
         "maxResolution":156543.0339,
         "maxExtent":[-20037508.34,-20037508.34,20037508.34,20037508.34],
@@ -106,7 +106,7 @@ community."
         }
       },
       "map": {
-        "projection":"EPSG:900913",
+        "projection":"EPSG:3857",
         "units":"m",
         "maxResolution":156543.0339,
         "maxExtent":[-20037508.34,-20037508.34,20037508.34,20037508.34],
