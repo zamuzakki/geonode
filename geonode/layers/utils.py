@@ -45,7 +45,7 @@ from django.db.models import Q
 from geonode import GeoNodeException, geoserver, qgis_server
 from geonode.people.utils import get_valid_user
 from geonode.layers.models import Layer, UploadSession
-from geonode.base.models import Link, SpatialRepresentationType, TopicCategory, Region, License, \
+from geonode.base.models import Link, SpatialRepresentationType, TopicCategory, Region, \
     ResourceBase
 from geonode.layers.models import shp_exts, csv_exts, vec_exts, cov_exts
 from geonode.layers.metadata import set_metadata
