@@ -25,6 +25,7 @@ import shutil
 import traceback
 import uuid
 import decimal
+from requests import Request
 
 from guardian.shortcuts import get_perms
 from django.contrib import messages
@@ -68,6 +69,8 @@ from geonode.geoserver.helpers import ogc_server_settings
 
 if 'geonode.geoserver' in settings.INSTALLED_APPS:
     from geonode.geoserver.helpers import _render_thumbnail
+if 'geonode.qgis_server' in settings.INSTALLED_APPS:
+    from geonode.qgis_server.models import QGISServerLayer
 CONTEXT_LOG_FILE = ogc_server_settings.LOG_FILE
 
 logger = logging.getLogger("geonode.layers.views")
@@ -335,10 +338,12 @@ def layer_detail(request, layername, template='layers/layer_detail.html'):
                       item.url and 'wms' not in item.url and 'gwc' not in item.url]
     for item in links_view:
         if item.url and access_token:
-            item.url = "%s&access_token=%s" % (item.url, access_token)
+            params = {'access_token': access_token}
+            item.url = Request('GET', item.url, params=params).prepare().url
     for item in links_download:
         if item.url and access_token:
-            item.url = "%s&access_token=%s" % (item.url, access_token)
+            params = {'access_token': access_token}
+            item.url = Request('GET', item.url, params=params).prepare().url
 
     if request.user.has_perm('view_resourcebase', layer.get_self_resource()):
         context_dict["links"] = links_view
@@ -590,9 +595,18 @@ def layer_replace(request, layername, template='layers/layer_replace.html'):
                     out['success'] = False
                     out['errors'] = _("You are attempting to replace a raster layer with a vector.")
                 else:
-                    # delete geoserver's store before upload
-                    cat = gs_catalog
-                    cascading_delete(cat, layer.typename)
+                    if 'geonode.geoserver' in settings.INSTALLED_APPS:
+                        # delete geoserver's store before upload
+                        cat = gs_catalog
+                        cascading_delete(cat, layer.typename)
+                    elif 'geonode.qgis_server' in settings.INSTALLED_APPS:
+                        try:
+                            qgis_layer = QGISServerLayer.objects.get(
+                                layer=layer)
+                            qgis_layer.delete_qgis_layer()
+                        except QGISServerLayer.DoesNotExist:
+                            pass
+
                     saved_layer = file_upload(
                         base_file,
                         name=layer.name,

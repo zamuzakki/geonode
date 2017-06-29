@@ -436,8 +436,8 @@ def test(options):
     """
     Run GeoNode's Unit Test Suite
     """
-    sh("%s manage.py test %s.tests --noinput" % (options.get('prefix'),
-                                                 '.tests '.join(GEONODE_APPS)))
+    sh("%s manage.py test %s.tests --noinput --liveserver=0.0.0.0:8000" % (
+        options.get('prefix'), '.tests '.join(GEONODE_APPS)))
 
 
 @task
@@ -581,9 +581,9 @@ def deb(options):
 
         sh(('git-dch --spawn-editor=snapshot --git-author --new-version=%s'
             ' --id-length=6 --ignore-branch --release' % (simple_version)))
-        #In case you publish from Ubuntu Xenial (git-dch is removed from upstream)
-        # use the following line instead:
-        #sh(('gbp dch --spawn-editor=snapshot --git-author --new-version=%s'
+        # In case you publish from Ubuntu Xenial (git-dch is removed from upstream)
+        #  use the following line instead:
+        # sh(('gbp dch --spawn-editor=snapshot --git-author --new-version=%s'
         #    ' --id-length=6 --ignore-branch --release' % (simple_version)))
 
         deb_changelog = path('debian') / 'changelog'

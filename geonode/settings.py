@@ -21,7 +21,6 @@
 # Django settings for the GeoNode project.
 import os
 
-from kombu import Queue
 from geonode import __file__ as geonode_path
 from geonode import get_version
 from geonode.celery_app import app  # flake8: noqa
@@ -316,7 +315,9 @@ INSTALLED_APPS = (
     'autocomplete_light',
     'mptt',
     # 'modeltranslation',
+    # 'djkombu',
     'djcelery',
+    # 'kombu.transport.django',
     'storages',
 
     # Theme
@@ -837,7 +838,8 @@ DOWNLOAD_FORMATS_RASTER = [
     'View in Google Earth',
     'Tiles',
     'GML',
-    'GZIP'
+    'GZIP',
+    'Zipped All Files'
 ]
 
 ACCOUNT_NOTIFY_ON_PASSWORD_CHANGE = False
@@ -971,15 +973,6 @@ CELERY_IMPORTS = (
     'geonode.tasks.update',
     'geonode.tasks.email'
 )
-
-
-CELERY_QUEUES = [
-    Queue('default', routing_key='default'),
-    Queue('cleanup', routing_key='cleanup'),
-    Queue('update', routing_key='update'),
-    Queue('email', routing_key='email'),
-]
-
 
 # AWS S3 Settings
 

@@ -33,6 +33,7 @@
             zoom_to_box(map, [{{ resource.bbox_string }}]);
         {% endif %}
 
+        var tile_layer;
         {% if resource.get_tiles_url %}
             tile_layer = L.tileLayer("{{ resource.get_tiles_url|safe }}",
                     {
@@ -52,7 +53,12 @@
                 transparent: true,
                 'opacity': 0.8
             });
-
+        {% elif resource.ows_url %}
+            tile_layer = L.tileLayer.betterWms('{{ resource.ows_url|safe }}', {
+              layers: '{{ resource.typename }}',
+              transparent: true,
+              format: 'image/png'
+            });
         {% endif %}
 
         if (tile_layer != null) {

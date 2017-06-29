@@ -23,79 +23,78 @@ from django.conf.urls import patterns, url
 from geonode.qgis_server.views import (
     download_zip,
     tile,
+    tile_404,
     legend,
-    thumbnail,
-    map_thumbnail,
+    layer_ogc_request,
     qgis_server_request,
     qgis_server_pdf,
     qgis_server_map_print,
-    geotiff
+    geotiff,
 )
 
 
 urlpatterns = patterns(
+
+    # Specific for a QGIS Layer
     '',
     url(
-        r'^qgis-server/download-zip/(?P<layername>[^/]*)'
-        r'[\?]?'
-        r'(?:&access_token=(?P<access_token>[\w]*))?$',
+        r'^download-zip/(?P<layername>[\w]*)$',
         download_zip,
-        name='qgis-server-download-zip'
+        name='download-zip'
     ),
     url(
-        r'^qgis-server/'
-        r'tiles/'
+        r'^tiles/'
         r'(?P<layername>[^/]*)/'
         r'(?P<z>[0-9]*)/'
         r'(?P<x>[0-9]*)/'
         r'(?P<y>[0-9]*).png$',
         tile,
-        name='qgis-server-tile'
+        name='tile'
     ),
     url(
-        r'^qgis-server/geotiff/'
-        r'(?P<layername>[\w]*)'
-        r'[\?]?'
-        r'(?:&access_token=(?P<access_token>[\w]*))?$',
+        r'^tiles/'
+        r'(?P<layername>[^/]*)/\{z\}/\{x\}/\{y\}.png$',
+        tile_404,
+        name='tile'
+    ),
+    url(
+        r'^geotiff/(?P<layername>[\w]*)$',
         geotiff,
-        name='qgis-server-geotiff'
+        name='geotiff'
     ),
     url(
-        r'^qgis-server/legend/(?P<layername>[\w]*)'
-        r'(?:/(?P<layertitle>[\w]*))?'
-        r'[\?]?'
-        r'(?:&access_token=(?P<access_token>[\w]*))?$',
+        r'^legend/(?P<layername>[\w]*)(?:/(?P<layertitle>[\w]*))?$',
         legend,
-        name='qgis-server-legend'
-    ),
-    # url(
-    #     r'^qgis-server/legend/(?P<layername>[^/]*)$',
-    #     legend,
-    #     name='qgis-server-legend'
-    # ),
-    url(
-        r'^qgis-server/thumbnail/(?P<layername>[\w]*)$',
-        thumbnail,
-        name='qgis-server-thumbnail'
+        name='legend'
     ),
     url(
-        r'^qgis-server/map/thumbnail/(?P<map_id>[\w]*)$',
-        map_thumbnail,
-        name='qgis-server-map-thumbnail'
+        r'^ogc/(?P<layername>[\w]+)$',
+        layer_ogc_request,
+        name='layer-request'
     ),
+
+    # Generic for OGC
+    # WMS entry point, this URL is not specific to WMS, you should remove it ?
     url(
-        r'^qgis-server/wms/$',
+        r'^wms/$',
         qgis_server_request,
-        name='qgis-server-request'
+        name='request'
     ),
     url(
-        r'^qgis-server/pdf/info\.json$',
+        r'^ogc/$',
+        qgis_server_request,
+        name='request'
+    ),
+
+    # Generic for the app
+    url(
+        r'^pdf/info\.json$',
         qgis_server_pdf,
-        name='qgis-server-pdf'
+        name='pdf'
     ),
     url(
-        r'^qgis-server/map/print$',
+        r'^map/print$',
         qgis_server_map_print,
-        name='qgis-server-map-print'
+        name='map-print'
     ),
 )

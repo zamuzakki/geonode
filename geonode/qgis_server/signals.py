@@ -17,42 +17,47 @@
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 #########################################################################
+from __future__ import absolute_import
 
 import logging
-import shutil
 import os
-from urllib2 import urlopen, quote
-from urlparse import urljoin
+import shutil
+import requests
+from requests.compat import urljoin
 
-from django.db.models import signals, ObjectDoesNotExist
-from django.dispatch import Signal
-from django.core.urlresolvers import reverse
 from django.conf import settings
+from django.core.urlresolvers import reverse
+from django.db.models import ObjectDoesNotExist, signals
+from django.dispatch import Signal
 
-from geonode.qgis_server.models import QGISServerLayer
+from geonode import qgis_server
 from geonode.base.models import Link
 from geonode.layers.models import Layer
 from geonode.maps.models import Map, MapLayer
-from geonode.qgis_server.tasks.update import create_qgis_server_thumbnail
 from geonode.qgis_server.gis_tools import set_attributes
+from geonode.qgis_server.helpers import tile_url
+from geonode.qgis_server.models import QGISServerLayer
+from geonode.qgis_server.tasks.update import create_qgis_server_thumbnail
+from geonode.utils import check_ogc_backend
+from geonode.qgis_server.xml_utilities import update_xml
 
 logger = logging.getLogger("geonode.qgis_server.signals")
-QGIS_layer_directory = settings.QGIS_SERVER_CONFIG['layer_directory']
+
+if check_ogc_backend(qgis_server.BACKEND_PACKAGE):
+    QGIS_layer_directory = settings.QGIS_SERVER_CONFIG['layer_directory']
 
 qgis_map_with_layers = Signal(providing_args=[])
 
 
 def qgis_server_layer_pre_delete(instance, sender, **kwargs):
-    """Removes the layer from Local Storage
-    """
+    """Removes the layer from Local Storage."""
     logger.debug('QGIS Server Layer Pre Delete')
     instance.delete_qgis_layer()
 
 
 def qgis_server_pre_delete(instance, sender, **kwargs):
-    """Removes the layer from Local Storage
-    """
-    logger.debug('QGIS Server Pre Delete')
+    """Removes the layer from Local Storage."""
+    # logger.debug('QGIS Server Pre Delete')
     # Deleting QGISServerLayer object happened on geonode level since it's
     # OneToOne relationship
     # Delete file is included when deleting the object.
@@ -70,14 +75,14 @@ def qgis_server_pre_save(instance, sender, **kwargs):
         * Metadata Links,
         * Point of Contact name and url
     """
-    logger.debug('QGIS Server Pre Save')
+    # logger.debug('QGIS Server Pre Save')
 
 
 def qgis_server_post_save(instance, sender, **kwargs):
-    """Save keywords to QGIS Server
+    """Save keywords to QGIS Server.
 
-       The way keywords are implemented requires the layer
-       to be saved to the database before accessing them.
+    The way keywords are implemented requires the layer to be saved to the
+    database before accessing them.
     """
     if not sender == Layer:
         return
@@ -98,9 +103,11 @@ def qgis_server_post_save(instance, sender, **kwargs):
     base_filename, original_ext = os.path.splitext(geonode_layer_path)
     extensions = QGISServerLayer.accepted_format
 
+    is_shapefile = False
+
     for ext in extensions:
         if os.path.exists(base_filename + '.' + ext):
-            logger.debug('Copying %s' % base_filename + '.' + ext)
+            is_shapefile = is_shapefile or ext == 'shp'
             try:
                 if created:
                     # Assuming different layer has different filename because
@@ -117,9 +124,11 @@ def qgis_server_post_save(instance, sender, **kwargs):
                         base_filename + '.' + ext,
                         qgis_layer_base_filename + '.' + ext
                     )
-                logger.debug('Success')
+                logger.debug(
+                    'Copying %s' % base_filename + '.' + ext + ' Success')
             except IOError as e:
-                logger.debug('Error copying file. %s' % e)
+                logger.debug(
+                    'Copying %s' % base_filename + '.' + ext + ' FAILED ' + e)
     if created:
         # Only set when creating new QGISServerLayer Object
         geonode_filename = os.path.basename(geonode_layer_path)
@@ -135,21 +144,70 @@ def qgis_server_post_save(instance, sender, **kwargs):
 
     # Set Link for Download Raw in Zip File
     zip_download_url = reverse(
-        'qgis-server-download-zip',
-        kwargs={'layername': instance.name})
+        'qgis_server:download-zip', kwargs={'layername': instance.name})
     zip_download_url = urljoin(base_url, zip_download_url)
     logger.debug('zip_download_url: %s' % zip_download_url)
+    if is_shapefile:
+        link_name = 'Zipped Shapefile'
+        link_mime = 'SHAPE-ZIP'
+    else:
+        link_name = 'Zipped All Files'
+        link_mime = 'ZIP'
+
+    # Zip file
     Link.objects.get_or_create(
         resource=instance.resourcebase_ptr,
         url=zip_download_url,
         defaults=dict(
             extension='zip',
-            name='Zipped Shapefile',
-            mime='SHAPE-ZIP',
+            name=link_name,
+            mime=link_mime,
             url=zip_download_url,
             link_type='data'
         )
     )
+
+    # WMS link layer workspace
+    ogc_wms_url = urljoin(
+        settings.SITEURL,
+        reverse(
+            'qgis_server:layer-request', kwargs={'layername': instance.name}))
+    ogc_wms_name = 'OGC WMS: %s Service' % instance.workspace
+    ogc_wms_link_type = 'OGC:WMS'
+    Link.objects.get_or_create(
+        resource=instance.resourcebase_ptr,
+        url=ogc_wms_url,
+        link_type=ogc_wms_link_type,
+        defaults=dict(
+            extension='html',
+            name=ogc_wms_name,
+            url=ogc_wms_url,
+            mime='text/html',
+            link_type=ogc_wms_link_type
+        )
+    )
+
+    if instance.is_vector():
+        # WFS link layer workspace
+        ogc_wfs_url = urljoin(
+            settings.SITEURL,
+            reverse(
+                'qgis_server:layer-request',
+                kwargs={'layername': instance.name}))
+        ogc_wfs_name = 'OGC WFS: %s Service' % instance.workspace
+        ogc_wfs_link_type = 'OGC:WFS'
+        Link.objects.get_or_create(
+            resource=instance.resourcebase_ptr,
+            url=ogc_wfs_url,
+            link_type=ogc_wfs_link_type,
+            defaults=dict(
+                extension='html',
+                name=ogc_wfs_name,
+                url=ogc_wfs_url,
+                mime='text/html',
+                link_type=ogc_wfs_link_type
+            )
+        )
 
     # Create the QGIS Project
     qgis_server = settings.QGIS_SERVER_CONFIG['qgis_server_url']
@@ -160,33 +218,15 @@ def qgis_server_post_save(instance, sender, **kwargs):
         'FILES': qgis_layer.base_layer_path,
         'NAMES': instance.name
     }
+    response = requests.get(qgis_server, params=query_string)
 
-    url = qgis_server + '?'
-    for param, value in query_string.iteritems():
-        url += param + '=' + value + '&'
-    url = url[:-1]
-
-    data = urlopen(url).read()
-    logger.debug('Creating the QGIS Project : %s' % url)
-    if data != 'OK':
-        logger.debug('Result : %s' % data)
-
-    tile_url = reverse(
-        'qgis-server-tile',
-        kwargs={
-            'layername': instance.name,
-            'x': 5678,
-            'y': 910,
-            'z': 1234
-        })
-    tile_url = urljoin(base_url, tile_url)
-    logger.debug('tile_url: %s' % tile_url)
-    tile_url = tile_url.replace('1234/5678/910', '{z}/{x}/{y}')
-    logger.debug('tile_url: %s' % tile_url)
+    logger.debug('Creating the QGIS Project : %s' % response.url)
+    if response.content != 'OK':
+        logger.debug('Result : %s' % response.content)
 
     Link.objects.get_or_create(
         resource=instance.resourcebase_ptr,
-        url=tile_url,
+        url=tile_url(instance.name),
         defaults=dict(
             extension='tiles',
             name="Tiles",
@@ -195,26 +235,27 @@ def qgis_server_post_save(instance, sender, **kwargs):
         )
     )
 
-    # geotiff link
-    geotiff_url = reverse(
-        'qgis-server-geotiff', kwargs={'layername': instance.name})
-    geotiff_url = urljoin(base_url, geotiff_url)
-    logger.debug('geotif_url: %s' % geotiff_url)
+    if original_ext.split('.')[-1] in QGISServerLayer.geotiff_format:
+        # geotiff link
+        geotiff_url = reverse(
+            'qgis_server:geotiff', kwargs={'layername': instance.name})
+        geotiff_url = urljoin(base_url, geotiff_url)
+        logger.debug('geotif_url: %s' % geotiff_url)
 
-    Link.objects.get_or_create(
-        resource=instance.resourcebase_ptr,
-        url=geotiff_url,
-        defaults=dict(
-            extension='tif',
-            name="GeoTIFF",
-            mime='image/tif',
-            link_type='image'
+        Link.objects.get_or_create(
+            resource=instance.resourcebase_ptr,
+            url=geotiff_url,
+            defaults=dict(
+                extension=original_ext.split('.')[-1],
+                name="GeoTIFF",
+                mime='image/tiff',
+                link_type='image'
+            )
         )
-    )
 
     # Create legend link
     legend_url = reverse(
-        'qgis-server-legend',
+        'qgis_server:legend',
         kwargs={'layername': instance.name}
     )
     legend_url = urljoin(base_url, legend_url)
@@ -236,6 +277,24 @@ def qgis_server_post_save(instance, sender, **kwargs):
 
     # Attributes
     set_attributes(instance)
+
+    # Update xml file
+    # Get the path of the metadata file
+    basename, _ = os.path.splitext(qgis_layer.base_layer_path)
+    xml_file_path = basename + '.xml'
+    if os.path.exists(xml_file_path):
+        try:
+            # Read metadata from layer that InaSAFE use.
+            # Some are not found: organisation, email, url
+            new_values = {
+                'date': instance.date.isoformat(),
+                'abstract': instance.abstract,
+                'title': instance.title,
+                'license': instance.license_verbose,
+            }
+            update_xml(xml_file_path, new_values)
+        except (TypeError, AttributeError):
+            pass
 
 
 def qgis_server_pre_save_maplayer(instance, sender, **kwargs):
@@ -293,42 +352,40 @@ def qgis_server_post_save_map(instance, sender, **kwargs):
         'NAMES': ';'.join(names),
         'OVERWRITE': 'true',
     }
+    response = requests.get(qgis_server, params=query_string)
 
-    url = qgis_server + '?'
-    for param, value in query_string.iteritems():
-        url += param + '=' + quote(value) + '&'
-    url = url[:-1]
-
-    data = urlopen(url).read()
+    logger.debug('Create project url: {url}'.format(url=response.url))
     logger.debug(
-        'Creating the QGIS Project : %s -> %s' % (project_path, data))
+        'Creating the QGIS Project : %s -> %s' % (
+            project_path, response.content))
 
     create_qgis_server_thumbnail.delay(
         instance, overwrite=True)
 
 
-logger.debug('Register signals QGIS Server')
-signals.pre_save.connect(
-    qgis_server_pre_save,
-    dispatch_uid='Layer-qgis_server_pre_save',
-    sender=Layer)
-signals.pre_delete.connect(
-    qgis_server_pre_delete,
-    dispatch_uid='Layer-qgis_server_pre_delete',
-    sender=Layer)
-signals.post_save.connect(
-    qgis_server_post_save,
-    dispatch_uid='Layer-qgis_server_post_save',
-    sender=Layer)
-signals.pre_save.connect(
-    qgis_server_pre_save_maplayer,
-    dispatch_uid='MapLayer-qgis_server_pre_save_maplayer',
-    sender=MapLayer)
-signals.post_save.connect(
-    qgis_server_post_save_map,
-    dispatch_uid='Map-qgis_server_post_save_map',
-    sender=Map)
-signals.pre_delete.connect(
-    qgis_server_layer_pre_delete,
-    dispatch_uid='QGISServerLayer-qgis_server_layer_pre_delete',
-    sender=QGISServerLayer)
+if check_ogc_backend(qgis_server.BACKEND_PACKAGE):
+    logger.debug('Register signals QGIS Server')
+    signals.pre_save.connect(
+        qgis_server_pre_save,
+        dispatch_uid='Layer-qgis_server_pre_save',
+        sender=Layer)
+    signals.pre_delete.connect(
+        qgis_server_pre_delete,
+        dispatch_uid='Layer-qgis_server_pre_delete',
+        sender=Layer)
+    signals.post_save.connect(
+        qgis_server_post_save,
+        dispatch_uid='Layer-qgis_server_post_save',
+        sender=Layer)
+    signals.pre_save.connect(
+        qgis_server_pre_save_maplayer,
+        dispatch_uid='MapLayer-qgis_server_pre_save_maplayer',
+        sender=MapLayer)
+    signals.post_save.connect(
+        qgis_server_post_save_map,
+        dispatch_uid='Map-qgis_server_post_save_map',
+        sender=Map)
+    signals.pre_delete.connect(
+        qgis_server_layer_pre_delete,
+        dispatch_uid='QGISServerLayer-qgis_server_layer_pre_delete',
+        sender=QGISServerLayer)

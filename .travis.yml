@@ -1,5 +1,7 @@
 sudo: required
 
+group: deprecated-2017Q2
+
 language: python
 
 python:
@@ -21,8 +23,10 @@ env:
     QGIS_SERVER_URL: http://localhost:9000/
     # This is the IP of docker network bridge
     # So QGIS server can access this address
-    SITEURL: http://172.17.0.1:8000/
+    SITEURL: http://localhost:8000/
+    GEONODE_PROJECT_PATH: /home/travis/build/kartoza/geonode/
     ON_TRAVIS: True
+    CELERY_ALWAYS_EAGER: True
 
 branches:
   only:
@@ -34,8 +38,13 @@ before_install:
   - scripts/misc/qgis_server_setup.sh before_install
 
 install:
+  - sudo add-apt-repository ppa:ubuntugis/ppa -y
   - sudo apt-get -qq -y update
-  - sudo apt-get install -y libgdal1h python-gdal
+  - sudo apt-get install -y python-gdal libgdal-dev
+#  - sudo apt-get install -y libgdal1h python-gdal
+#  - sudo easy_install GDAL
+  - pip install GDAL
+  - python -c "from osgeo import ogr"
   - sudo apt-get install -y python-virtualenv python-imaging python-lxml python-pyproj python-shapely python-nose python-httplib2 python-httplib2 gettext
   - sudo add-apt-repository -y ppa:webupd8team/java
   - sudo apt-get update
@@ -46,7 +55,8 @@ install:
   - sudo update-java-alternatives --set java-8-oracle
   - pip install -r requirements.txt
   - pip install -e . --no-deps
-  - pip install coveralls
+  - pip install codecov
+  - which python
 
 before_script:
   - paver setup
@@ -65,15 +75,18 @@ after_script:
   - paver reset_hard
 
 after_success:
-  - coveralls
+  - codecov
 
-notifications:
-  irc:
-    channels:
-      - "irc.freenode.org#geonode"
-    use_notice: true
-  email:
-    - geonode-dev@boundlessgeo.com
-    - ingenieroariel@gmail.com
-    - simone.dalmasso@gmail.com
-  slack: geonode-sprint:oQylJRkU9feZ8JruGi6czWwe
+# Commented out until changes are merged upstream.
+#  We don't have to bother geonode core developer.
+
+#notifications:
+#  irc:
+#    channels:
+#      - "irc.freenode.org#geonode"
+#    use_notice: true
+#  email:
+#    - geonode-dev@boundlessgeo.com
+#    - ingenieroariel@gmail.com
+#    - simone.dalmasso@gmail.com
+#  slack: geonode-sprint:oQylJRkU9feZ8JruGi6czWwe
