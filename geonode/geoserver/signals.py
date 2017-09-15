@@ -28,6 +28,8 @@ from socket import error as socket_error
 from django.utils.translation import ugettext
 from django.conf import settings
 
+from geonode import geoserver
+from geonode.decorators import on_ogc_backend
 from geonode.geoserver.ows import wcs_links, wfs_links, wms_links
 from geonode.geoserver.helpers import cascading_delete, set_attributes_from_geoserver
 from geonode.geoserver.helpers import set_styles, gs_catalog
@@ -50,8 +52,8 @@ def geoserver_pre_delete(instance, sender, **kwargs):
     # ogc_server_settings.BACKEND_WRITE_ENABLED == True
     if getattr(ogc_server_settings, "BACKEND_WRITE_ENABLED", True):
         if not getattr(instance, "service", None):
-            if instance.typename:
-                cascading_delete(gs_catalog, instance.typename)
+            if instance.alternate:
+                cascading_delete(gs_catalog, instance.alternate)
 
 
 def geoserver_pre_save(instance, sender, **kwargs):
@@ -99,7 +101,9 @@ def geoserver_pre_save(instance, sender, **kwargs):
         instance.name = gs_name
         instance.workspace = workspace
         # Iterate over values from geoserver.
-        for key in ['typename', 'store', 'storeType']:
+        for key in ['alternate', 'store', 'storeType']:
+            # attr_name = key if 'typename' not in key else 'alternate'
+            # print attr_name
             setattr(instance, key, values[key])
 
     if not gs_resource:
@@ -172,6 +176,7 @@ def geoserver_pre_save(instance, sender, **kwargs):
         instance.gs_resource = gs_resource
 
 
+@on_ogc_backend(geoserver.BACKEND_PACKAGE)
 def geoserver_post_save(instance, sender, **kwargs):
     """Save keywords to GeoServer
 
@@ -218,8 +223,18 @@ def geoserver_post_save(instance, sender, **kwargs):
                 gs_resource.advertised = instance.is_published
                 gs_catalog.save(gs_resource)
 
+    if not settings.FREETEXT_KEYWORDS_READONLY:
+        if gs_resource.keywords:
+            for keyword in gs_resource.keywords:
+                instance.keywords.add(keyword)
+
     if any(instance.keyword_list()):
-        gs_resource.keywords = instance.keyword_list()
+        keywords = instance.keyword_list()
+        if settings.FREETEXT_KEYWORDS_READONLY:
+            if gs_resource.keywords:
+                keywords += gs_resource.keywords
+        gs_resource.keywords = list(set(keywords))
+
         # gs_resource should only be called if
         # ogc_server_settings.BACKEND_WRITE_ENABLED == True
         if getattr(ogc_server_settings, "BACKEND_WRITE_ENABLED", True):
@@ -236,7 +251,7 @@ def geoserver_post_save(instance, sender, **kwargs):
 
     # Set download links for WMS, WCS or WFS and KML
     links = wms_links(ogc_server_settings.public_url + 'wms?',
-                      instance.typename.encode('utf-8'), instance.bbox_string,
+                      instance.alternate.encode('utf-8'), instance.bbox_string,
                       instance.srid, height, width)
 
     for ext, name, mime, wms_url in links:
@@ -254,7 +269,7 @@ def geoserver_post_save(instance, sender, **kwargs):
         links = wfs_links(
             ogc_server_settings.public_url +
             'wfs?',
-            instance.typename.encode('utf-8'))
+            instance.alternate.encode('utf-8'))
         for ext, name, mime, wfs_url in links:
             if mime == 'SHAPE-ZIP':
                 name = 'Zipped Shapefile'
@@ -319,7 +334,9 @@ def geoserver_post_save(instance, sender, **kwargs):
     elif instance.storeType == 'coverageStore':
 
         links = wcs_links(ogc_server_settings.public_url + 'wcs?',
-                          instance.typename.encode('utf-8'))
+                          instance.alternate.encode('utf-8'),
+                          ','.join(str(x) for x in instance.bbox[0:4]),
+                          instance.srid)
 
     for ext, name, mime, wcs_url in links:
         Link.objects.get_or_create(resource=instance.resourcebase_ptr,
@@ -333,7 +350,7 @@ def geoserver_post_save(instance, sender, **kwargs):
                                    )
 
     kml_reflector_link_download = ogc_server_settings.public_url + "wms/kml?" + \
-        urllib.urlencode({'layers': instance.typename.encode('utf-8'), 'mode': "download"})
+        urllib.urlencode({'layers': instance.alternate.encode('utf-8'), 'mode': "download"})
 
     Link.objects.get_or_create(resource=instance.resourcebase_ptr,
                                url=kml_reflector_link_download,
@@ -346,7 +363,7 @@ def geoserver_post_save(instance, sender, **kwargs):
                                )
 
     kml_reflector_link_view = ogc_server_settings.public_url + "wms/kml?" + \
-        urllib.urlencode({'layers': instance.typename.encode('utf-8'), 'mode': "refresh"})
+        urllib.urlencode({'layers': instance.alternate.encode('utf-8'), 'mode': "refresh"})
 
     Link.objects.get_or_create(resource=instance.resourcebase_ptr,
                                url=kml_reflector_link_view,
@@ -365,18 +382,18 @@ def geoserver_post_save(instance, sender, **kwargs):
                                url=html_link_url,
                                defaults=dict(
                                    extension='html',
-                                   name=instance.typename,
+                                   name=instance.alternate,
                                    mime='text/html',
                                    link_type='html',
                                )
                                )
 
-    logger.info("Creating Thumbnail for Layer [%s]" % (instance.typename))
+    logger.info("Creating Thumbnail for Layer [%s]" % (instance.alternate))
     create_gs_thumbnail(instance, overwrite=False)
 
     legend_url = ogc_server_settings.PUBLIC_LOCATION + \
         'wms?request=GetLegendGraphic&format=image/png&WIDTH=20&HEIGHT=20&LAYER=' + \
-        instance.typename + '&legend_options=fontAntiAliasing:true;fontSize:12;forceLabels:on'
+        instance.alternate + '&legend_options=fontAntiAliasing:true;fontSize:12;forceLabels:on'
 
     Link.objects.get_or_create(resource=instance.resourcebase_ptr,
                                url=legend_url,
@@ -446,7 +463,7 @@ def geoserver_post_save(instance, sender, **kwargs):
     # Define the link after the cleanup, we should use this more rather then remove
     # potential parasites
     tile_url = ('%sgwc/service/gmaps?' % ogc_server_settings.public_url +
-                'layers=%s' % instance.typename.encode('utf-8') +
+                'layers=%s' % instance.alternate.encode('utf-8') +
                 '&zoom={z}&x={x}&y={y}' +
                 '&format=image/png8'
                 )

@@ -27,14 +27,13 @@ from django.db.models import signals
 
 from geonode.tasks.email import send_queued_notifications
 
-E = getattr(settings, 'NOTIFICATION_ENABLED', '')
-M = getattr(settings, 'NOTIFICATIONS_MODULE', '')
+E = getattr(settings, 'NOTIFICATION_ENABLED', False)
+M = getattr(settings, 'NOTIFICATIONS_MODULE', None)
 notifications = None
 
-notifications_enabled = E and settings.NOTIFICATION_ENABLED
-has_notifications = M and M in settings.INSTALLED_APPS
+has_notifications = E and M and M in settings.INSTALLED_APPS
 
-if notifications_enabled and has_notifications:
+if has_notifications:
     notifications = import_module(M)
 
 
@@ -65,7 +64,7 @@ class NotificationsAppConfigBase(AppConfig):
 def call_celery(func):
     def wrap(*args, **kwargs):
         ret = func(*args, **kwargs)
-        if settings.NOTIFICATION_QUEUE_ALL:
+        if settings.PINAX_NOTIFICATIONS_QUEUE_ALL:
             send_queued_notifications.delay()
         return ret
     return wrap
@@ -88,7 +87,7 @@ def send_notification(*args, **kwargs):
     """
     if has_notifications:
         # queue for further processing if required
-        if settings.NOTIFICATION_QUEUE_ALL:
+        if settings.PINAX_NOTIFICATIONS_QUEUE_ALL:
             return queue_notification(*args, **kwargs)
         return notifications.models.send(*args, **kwargs)
 

@@ -100,6 +100,7 @@ urlpatterns = patterns('',
                        url(r'^jsi18n/$', 'django.views.i18n.javascript_catalog', js_info_dict, name='jscat'),
                        url(r'^sitemap\.xml$', 'django.contrib.sitemaps.views.sitemap', {'sitemaps': sitemaps},
                            name='sitemap'),
+                       url(r'^robots\.txt$', TemplateView.as_view(template_name='robots.txt'), name='robots'),
 
                        (r'^i18n/', include('django.conf.urls.i18n')),
                        (r'^autocomplete/', include('autocomplete_light.urls')),
@@ -129,6 +130,11 @@ if "geonode.contrib.metadataxsl" in settings.INSTALLED_APPS:
                             (r'^showmetadata/', include('geonode.contrib.metadataxsl.urls')),
                             )
 
+if "geonode.contrib.createlayer" in settings.INSTALLED_APPS:
+    urlpatterns += patterns('',
+                            (r'^createlayer/', include('geonode.contrib.createlayer.urls')),
+                            )
+
 if 'geonode.geoserver' in settings.INSTALLED_APPS:
     # GeoServer Helper Views
     urlpatterns += patterns('',
@@ -153,6 +159,11 @@ if settings.NOTIFICATIONS_MODULE in settings.INSTALLED_APPS:
 if "djmp" in settings.INSTALLED_APPS:
     urlpatterns += patterns('',
                             (r'^djmp/', include('djmp.urls')),
+                            )
+
+if 'geonode.contrib.ows_api' in settings.INSTALLED_APPS:
+    urlpatterns += patterns('',
+                            url('^', include('geonode.contrib.ows_api.urls')),
                             )
 
 # Set up proxy

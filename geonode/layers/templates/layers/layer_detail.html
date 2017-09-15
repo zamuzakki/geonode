@@ -8,7 +8,7 @@
 {% load base_tags %}
 {% load guardian_tags %}
 
-{% block title %}{{ resource.title|default:resource.typename }} — {{ block.super }}{% endblock %}
+{% block title %}{{ resource.title|default:resource.alternate }} — {{ block.super }}{% endblock %}
 
 {% block head %}
 
@@ -37,7 +37,7 @@
 
 {% block body_outer %}
 <div class="page-header">
-  <h2 class="page-title">{{ resource.title|default:resource.typename }}</h2>
+  <h2 class="page-title">{{ resource.title|default:resource.alternate }}</h2>
 </div>
 
 <div class="row">
@@ -310,7 +310,7 @@
     {% get_obj_perms request.user for resource.layer as "layer_perms" %}
 
     <li class="list-group-item">
-      <a href="{% url "layer_metadata_detail" resource.typename %}">
+      <a href="{% url "layer_metadata_detail" resource.alternate %}">
         <button class="btn btn-primary btn-md btn-block">{% trans "Metadata Detail" %}</button>
       </a>
     </li>
@@ -345,6 +345,7 @@
                   {% if preview == 'geoext' %}
                   <a class="btn btn-default btn-block btn-xs style-edit" data-dismiss="modal" href="#">{% trans "Edit" %}</a>
                   {% endif %}
+                  <a class="btn btn-default btn-block btn-xs" href="{% url "layer_sld_upload" resource.service_typename %}">{% trans "Upload" %}</a>
                   <a class="btn btn-default btn-block btn-xs" href="{% url "layer_style_manage" resource.service_typename %}">{% trans "Manage" %}</a>
                 </div>
                 {% endif %}
@@ -598,10 +599,18 @@
     {% endif %}
         </script>
     <script type="text/javascript">
-      $('#set_thumbnail').click(function(){
-        createMapThumbnail();
-        $('#edit-layer').modal('toggle');
-      });
+    {% if preview == 'react' %}
+    $('#set_thumbnail').click(function(){
+      window.setThumbnail({{resource.id}})
+      $('#edit-layer').modal('toggle');
+    });
+    {% else %}
+    $('#set_thumbnail').click(function(){
+      createMapThumbnail();
+      $('#edit-layer').modal('toggle');
+    });
+    {% endif %}
+
     </script>
     {% if GEONODE_SECURITY_ENABLED %}
     {% include "_permissions_form_js.html" %}

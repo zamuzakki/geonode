@@ -401,7 +401,7 @@ def qgis_server_post_save(instance, sender, **kwargs):
 def qgis_server_pre_save_maplayer(instance, sender, **kwargs):
     logger.debug('QGIS Server Pre Save Map Layer %s' % instance.name)
     try:
-        layer = Layer.objects.get(typename=instance.name)
+        layer = Layer.objects.get(alternate=instance.name)
         if layer:
             instance.local = True
     except Layer.DoesNotExist:
@@ -426,7 +426,7 @@ def qgis_server_post_save_map(instance, sender, **kwargs):
     layers = []
     for layer in local_layers:
         try:
-            l = Layer.objects.get(typename=layer.name)
+            l = Layer.objects.get(alternate=layer.name)
             layers.append(l)
         except Layer.DoesNotExist:
             msg = 'No Layer found for typename: {0}'.format(layer.name)
@@ -437,6 +437,7 @@ def qgis_server_post_save_map(instance, sender, **kwargs):
         return
 
     # Set default bounding box based on all layers extents.
+    # bbox format [xmin, xmax, ymin, ymax]
     bbox = instance.get_bbox_from_layers(instance.local_layers)
     instance.set_bounds_from_bbox(bbox)
     Map.objects.filter(id=map_id).update(

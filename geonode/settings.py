@@ -1,3 +1,4 @@
+
 # -*- coding: utf-8 -*-
 #########################################################################
 #
@@ -92,6 +93,8 @@ DATABASE_URL = os.getenv(
         path=os.path.join(PROJECT_ROOT, 'development.db')
     )
 )
+
+#DATABASE_URL = 'postgresql://test_geonode:test_geonode@localhost:5432/geonode'
 
 # Defines settings for development
 DATABASES = {
@@ -290,7 +293,9 @@ GEONODE_CONTRIB_APPS = (
     # 'geonode.contrib.geosites',
     # 'geonode.contrib.nlp',
     # 'geonode.contrib.slack',
+    #'geonode.contrib.createlayer',
     'geonode.contrib.metadataxsl',
+    'geonode.contrib.api_basemaps',
 )
 
 # Uncomment the following line to enable contrib apps
@@ -662,6 +667,8 @@ CATALOGUE = {
         # login credentials (for GeoNetwork)
         # 'USER': 'admin',
         # 'PASSWORD': 'admin',
+
+        # 'ALTERNATES_ONLY': True,
     }
 }
 
@@ -737,6 +744,7 @@ STAMEN_BASEMAPS = os.environ.get('STAMEN_BASEMAPS', False)
 THUNDERFOREST_BASEMAPS = os.environ.get('THUNDERFOREST_BASEMAPS', False)
 MAPBOX_ACCESS_TOKEN = os.environ.get('MAPBOX_ACCESS_TOKEN', None)
 BING_API_KEY = os.environ.get('BING_API_KEY', None)
+GOOGLE_API_KEY = os.environ.get('GOOGLE_API_KEY', None)
 
 MAP_BASELAYERS = [{
     "source": {"ptype": "gxp_olsource"},
@@ -848,7 +856,7 @@ HAYSTACK_SEARCH = strtobool(os.getenv('HAYSTACK_SEARCH', 'False'))
 # Avoid permissions prefiltering
 SKIP_PERMS_FILTER = strtobool(os.getenv('SKIP_PERMS_FILTER', 'False'))
 # Update facet counts from Haystack
-HAYSTACK_FACET_COUNTS = strtobool(os.getenv('HAYSTACK_FACET_COUNTS', 'False'))
+HAYSTACK_FACET_COUNTS = strtobool(os.getenv('HAYSTACK_FACET_COUNTS', 'True'))
 # HAYSTACK_CONNECTIONS = {
 #    'default': {
 #        'ENGINE': 'haystack.backends.elasticsearch_backend.'
@@ -1025,11 +1033,21 @@ SEARCH_FILTERS = {
 FREETEXT_KEYWORDS_READONLY = False
 
 # notification settings
-NOTIFICATION_ENABLED = False or TEST
-NOTIFICATION_LANGUAGE_MODULE = "account.Account"
+NOTIFICATION_ENABLED = True or TEST
+PINAX_NOTIFICATIONS_LANGUAGE_MODEL = "account.Account"
+
+# notifications backends
+_EMAIL_BACKEND = "pinax.notifications.backends.email.EmailBackend"
+PINAX_NOTIFICATIONS_BACKENDS = [
+    ("email", _EMAIL_BACKEND),
+]
 
 # Queue non-blocking notifications.
-NOTIFICATION_QUEUE_ALL = False
+PINAX_NOTIFICATIONS_QUEUE_ALL = False
+PINAX_NOTIFICATIONS_LOCK_WAIT_TIMEOUT = -1
+
+# explicitly define NOTIFICATION_LOCK_LOCATION
+# NOTIFICATION_LOCK_LOCATION = <path>
 
 # pinax.notifications
 # or notification
@@ -1160,4 +1178,17 @@ RISKS = {'DEFAULT_LOCATION': None,
                            'BIN': '/usr/bin/wkhtml2pdf',
                            'ARGS': []}}
 
+# Each uploaded Layer must be approved by an Admin before becoming visible
 ADMIN_MODERATE_UPLOADS = False
+
+# If this option is enabled, Resources belonging to a Group won't be visible by others
+GROUP_PRIVATE_RESOURCES = False
+
+# If this option is enabled, Groups will become strictly Mandatory on Metadata Wizard
+GROUP_MANDATORY_RESOURCES = False
+
+# Enables cross origin requests for geonode-client
+MAP_CLIENT_USE_CROSS_ORIGIN_CREDENTIALS = strtobool(os.getenv(
+    'MAP_CLIENT_USE_CROSS_ORIGIN_CREDENTIALS',
+    'False'
+))

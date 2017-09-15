@@ -46,8 +46,8 @@ from django.db.models import Q
 from geonode import GeoNodeException, geoserver, qgis_server
 from geonode.people.utils import get_valid_user
 from geonode.layers.models import Layer, UploadSession, LayerFile
-from geonode.base.models import Link, SpatialRepresentationType, TopicCategory, Region, License, \
-    ResourceBase
+from geonode.base.models import Link, SpatialRepresentationType, \
+    TopicCategory, Region, License, ResourceBase
 from geonode.layers.models import shp_exts, csv_exts, vec_exts, cov_exts
 from geonode.layers.metadata import set_metadata
 from geonode.utils import http_client, check_ogc_backend
@@ -86,7 +86,8 @@ def resolve_regions(regions):
         if len(regions) > 0:
             for region in regions:
                 try:
-                    region_resolved = Region.objects.get(Q(name__iexact=region) | Q(code__iexact=region))
+                    region_resolved = Region.objects.get(
+                        Q(name__iexact=region) | Q(code__iexact=region))
                     regions_resolved.append(region_resolved)
                 except ObjectDoesNotExist:
                     regions_unresolved.append(region)
@@ -158,7 +159,7 @@ def get_files(filename):
                    'distinct by spelling and not just case.') % filename
             raise GeoNodeException(msg)
 
-    matches = glob.glob(base_name + ".[xX][mM][lL]")
+    matches = glob.glob(glob_name + ".[xX][mM][lL]")
 
     # shapefile XML metadata is sometimes named base_name.shp.xml
     # try looking for filename.xml if base_name.xml does not exist
@@ -397,6 +398,9 @@ def file_upload(filename, name=None, user=None, title=None, abstract=None,
                 metadata_upload_form=False):
     """Saves a layer in GeoNode asking as little information as possible.
        Only filename is required, user and title are optional.
+
+    :return: Uploaded layer
+    :rtype: Layer
     """
     if keywords is None:
         keywords = []
@@ -450,8 +454,10 @@ def file_upload(filename, name=None, user=None, title=None, abstract=None,
     assigned_name = None
     for type_name, fn in files.items():
         with open(fn, 'rb') as f:
-            upload_session.layerfile_set.create(name=type_name,
-                                                file=File(f, name='%s.%s' % (assigned_name or valid_name, type_name)))
+            upload_session.layerfile_set.create(
+                name=type_name, file=File(
+                    f, name='%s.%s' %
+                    (assigned_name or valid_name, type_name)))
             # save the system assigned name for the remaining files
             if not assigned_name:
                 the_file = upload_session.layerfile_set.all()[0].file.name
@@ -520,7 +526,7 @@ def file_upload(filename, name=None, user=None, title=None, abstract=None,
             if nlp_metadata:
                 regions_resolved.extend(nlp_metadata.get('regions', []))
                 keywords.extend(nlp_metadata.get('keywords', []))
-        except:
+        except BaseException:
             print "NLP extraction failed."
 
     # If it is a vector file, create the layer in postgis.
@@ -687,38 +693,45 @@ def upload(incoming, user=None, overwrite=False,
                 if tarfile.is_tarfile(filename):
                     filename = extract_tarfile(filename)
 
-                layer = file_upload(filename,
-                                    name=name,
-                                    title=title,
-                                    abstract=abstract,
-                                    date=date,
-                                    user=user,
-                                    overwrite=overwrite,
-                                    license=license,
-                                    category=category,
-                                    keywords=keywords,
-                                    regions=regions,
-                                    metadata_uploaded_preserve=metadata_uploaded_preserve
-                                    )
+                layer = file_upload(
+                    filename,
+                    name=name,
+                    title=title,
+                    abstract=abstract,
+                    date=date,
+                    user=user,
+                    overwrite=overwrite,
+                    license=license,
+                    category=category,
+                    keywords=keywords,
+                    regions=regions,
+                    metadata_uploaded_preserve=metadata_uploaded_preserve)
                 if not existed:
                     status = 'created'
                 else:
                     status = 'updated'
                 if private and user:
-                    perm_spec = {"users": {"AnonymousUser": [],
-                                           user.username: ["change_resourcebase_metadata", "change_layer_data",
-                                                           "change_layer_style", "change_resourcebase",
-                                                           "delete_resourcebase", "change_resourcebase_permissions",
-                                                           "publish_resourcebase"]}, "groups": {}}
+                    perm_spec = {
+                        "users": {
+                            "AnonymousUser": [],
+                            user.username: [
+                                "change_resourcebase_metadata",
+                                "change_layer_data",
+                                "change_layer_style",
+                                "change_resourcebase",
+                                "delete_resourcebase",
+                                "change_resourcebase_permissions",
+                                "publish_resourcebase"]},
+                        "groups": {}}
                     layer.set_permissions(perm_spec)
 
                 if getattr(settings, 'SLACK_ENABLED', False):
                     try:
                         from geonode.contrib.slack.utils import build_slack_message_layer, send_slack_messages
-                        send_slack_messages(build_slack_message_layer(
-                            ("layer_new" if status == "created" else "layer_edit"),
-                            layer))
-                    except:
+                        send_slack_messages(
+                            build_slack_message_layer(
+                                ("layer_new" if status == "created" else "layer_edit"), layer))
+                    except BaseException:
                         print "Could not send slack message."
 
             except Exception as e:
@@ -760,7 +773,6 @@ def create_thumbnail(instance, thumbnail_remote_url, thumbnail_create_url=None,
     thumbnail_path = os.path.join(thumbnail_dir, thumbnail_name)
 
     if overwrite is True or storage.exists(thumbnail_path) is False:
-        logger.debug('Will fetch thumbnail %s' % thumbnail_remote_url)
         if not ogc_client:
             ogc_client = http_client
         BBOX_DIFFERENCE_THRESHOLD = 1e-5
@@ -787,7 +799,6 @@ def create_thumbnail(instance, thumbnail_remote_url, thumbnail_create_url=None,
         image = None
 
         if valid_x and valid_y:
-            logger.debug('Valid bbox. Will create Remote Thumbnail Link.')
             Link.objects.get_or_create(resource=instance.get_self_resource(),
                                        url=thumbnail_remote_url,
                                        defaults=dict(
@@ -795,8 +806,8 @@ def create_thumbnail(instance, thumbnail_remote_url, thumbnail_create_url=None,
                                            name="Remote Thumbnail",
                                            mime='image/png',
                                            link_type='image',
-                                           )
-                                       )
+            )
+            )
             ResourceBase.objects.filter(id=instance.id) \
                 .update(thumbnail_url=thumbnail_remote_url)
             # Download thumbnail and save it locally.

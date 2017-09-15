@@ -21,6 +21,7 @@
 import json
 import time
 
+from django.db.models import Q
 from django.conf.urls import url
 from django.contrib.auth import get_user_model
 from django.core.urlresolvers import reverse
@@ -36,9 +37,9 @@ from tastypie import http
 from tastypie.exceptions import BadRequest
 
 from geonode import qgis_server, geoserver
+from geonode.api.authorization import GeoNodeStyleAuthorization
 from geonode.qgis_server.models import QGISServerStyle
 from guardian.shortcuts import get_objects_for_user
-from tastypie.authorization import DjangoAuthorization
 from tastypie.bundle import Bundle
 
 from geonode.base.models import ResourceBase
@@ -51,7 +52,7 @@ from geonode.layers.models import Layer, Style
 from geonode.maps.models import Map
 from geonode.documents.models import Document
 from geonode.groups.models import GroupProfile, GroupCategory
-
+from django.contrib.auth.models import Group
 from django.core.serializers.json import DjangoJSONEncoder
 from tastypie.serializers import Serializer
 from tastypie import fields
@@ -238,6 +239,51 @@ class RegionResource(TypeFilteredResource):
 
 class TopicCategoryResource(TypeFilteredResource):
     """Category api"""
+    layers_count = fields.IntegerField(default=0)
+
+    def dehydrate_layers_count(self, bundle):
+        request = bundle.request
+        obj_with_perms = get_objects_for_user(request.user,
+                                              'base.view_resourcebase').instance_of(Layer)
+        filter_set = bundle.obj.resourcebase_set.filter(id__in=obj_with_perms.values('id'))
+
+        if not settings.SKIP_PERMS_FILTER:
+            is_admin = False
+            is_staff = False
+            if request.user:
+                is_admin = request.user.is_superuser if request.user else False
+                is_staff = request.user.is_staff if request.user else False
+
+            # Get the list of objects the user has access to
+            if settings.ADMIN_MODERATE_UPLOADS:
+                if not is_admin and not is_staff:
+                    filter_set = filter_set.filter(is_published=True)
+
+            if settings.RESOURCE_PUBLISHING:
+                filter_set = filter_set.filter(is_published=True)
+
+            try:
+                anonymous_group = Group.objects.get(name='anonymous')
+            except:
+                anonymous_group = None
+
+            if settings.GROUP_PRIVATE_RESOURCES:
+                if is_admin:
+                    filter_set = filter_set
+                elif request.user:
+                    groups = request.user.groups.all()
+                    if anonymous_group:
+                        filter_set = filter_set.filter(
+                            Q(group__isnull=True) | Q(group__in=groups) | Q(group=anonymous_group))
+                    else:
+                        filter_set = filter_set.filter(Q(group__isnull=True) | Q(group__in=groups))
+                else:
+                    if anonymous_group:
+                        filter_set = filter_set.filter(Q(group__isnull=True) | Q(group=anonymous_group))
+                    else:
+                        filter_set = filter_set.filter(Q(group__isnull=True))
+
+        return filter_set.distinct().count()
 
     def serialize(self, request, data, format, options=None):
         if options is None:
@@ -277,7 +323,6 @@ class GroupCategoryResource(TypeFilteredResource):
 
 class GroupResource(ModelResource):
     """Groups api"""
-
     detail_url = fields.CharField()
     member_count = fields.IntegerField()
     manager_count = fields.IntegerField()
@@ -305,7 +350,6 @@ class GroupResource(ModelResource):
 
 class ProfileResource(TypeFilteredResource):
     """Profile api"""
-
     avatar_100 = fields.CharField(null=True)
     profile_detail_url = fields.CharField()
     email = fields.CharField(default='')
@@ -456,7 +500,7 @@ class QGISStyleResource(ModelResource):
         resource_name = 'styles'
         detail_uri_name = 'id'
         allowed_methods = ['get', 'post', 'delete']
-        authorization = DjangoAuthorization()
+        authorization = GeoNodeStyleAuthorization()
         filtering = {
             'id': ALL,
             'title': ALL,
@@ -480,9 +524,10 @@ class QGISStyleResource(ModelResource):
             pass
         return style
 
-    def build_filters(self, filters=None):
+    def build_filters(self, filters=None, **kwargs):
         """Apply custom filters for layer."""
-        filters = super(QGISStyleResource, self).build_filters(filters)
+        filters = super(QGISStyleResource, self).build_filters(
+            filters, **kwargs)
         # Convert layer__ filters into layer_styles__layer__
         updated_filters = {}
         for key, value in filters.iteritems():
@@ -490,8 +535,7 @@ class QGISStyleResource(ModelResource):
             updated_filters[key] = value
         return updated_filters
 
-    def build_bundle(
-            self, obj=None, data=None, request=None, objects_saved=None):
+    def build_bundle(self, obj=None, data=None, request=None, **kwargs):
         """Override build_bundle method to add additional info."""
 
         if obj is None and self._meta.object_class:
@@ -504,8 +548,7 @@ class QGISStyleResource(ModelResource):
             obj=obj,
             data=data,
             request=request,
-            objects_saved=objects_saved
-        )
+            **kwargs)
 
     def post_list(self, request, **kwargs):
         """Attempt to redirect to QGIS Server Style management.
@@ -635,7 +678,7 @@ class GeoserverStyleResource(ModelResource):
         queryset = Style.objects.all()
         resource_name = 'styles'
         detail_uri_name = 'id'
-        authorization = DjangoAuthorization()
+        authorization = GeoNodeStyleAuthorization()
         allowed_methods = ['get']
         filtering = {
             'id': ALL,
@@ -644,9 +687,10 @@ class GeoserverStyleResource(ModelResource):
             'layer': ALL_WITH_RELATIONS
         }
 
-    def build_filters(self, filters=None):
+    def build_filters(self, filters=None, **kwargs):
         """Apply custom filters for layer."""
-        filters = super(GeoserverStyleResource, self).build_filters(filters)
+        filters = super(GeoserverStyleResource, self).build_filters(
+            filters, **kwargs)
         # Convert layer__ filters into layer_styles__layer__
         updated_filters = {}
         for key, value in filters.iteritems():
@@ -664,8 +708,7 @@ class GeoserverStyleResource(ModelResource):
         style.type = 'sld'
         return style
 
-    def build_bundle(
-            self, obj=None, data=None, request=None, objects_saved=None):
+    def build_bundle(self, obj=None, data=None, request=None, **kwargs):
         """Override build_bundle method to add additional info."""
 
         if obj is None and self._meta.object_class:
@@ -678,8 +721,7 @@ class GeoserverStyleResource(ModelResource):
             obj=obj,
             data=data,
             request=request,
-            objects_saved=objects_saved
-        )
+            **kwargs)
 
 
 if check_ogc_backend(qgis_server.BACKEND_PACKAGE):

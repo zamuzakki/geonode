@@ -25,6 +25,8 @@ import urllib2
 # import base64
 import time
 import logging
+
+from StringIO import StringIO
 import gisdata
 
 from django.conf import settings
@@ -35,6 +37,11 @@ from django.core.urlresolvers import reverse
 from django.contrib.staticfiles.templatetags import staticfiles
 from django.contrib.auth import get_user_model
 # from guardian.shortcuts import assign_perm
+from django.test.testcases import LiveServerTestCase
+from geonode.base.populate_test_data import reconnect_signals, all_public, \
+    disconnect_signals
+from tastypie.test import ResourceTestCaseMixin
+
 from geonode.qgis_server.models import QGISServerLayer
 
 from geoserver.catalog import FailedRequestError, UploadError
@@ -56,7 +63,7 @@ from geonode.geoserver.helpers import cascading_delete, set_attributes_from_geos
 # from geonode.geoserver.helpers import get_wms
 # from geonode.geoserver.helpers import set_time_info
 from geonode.geoserver.signals import gs_catalog
-
+from geonode.utils import check_ogc_backend
 
 LOGIN_URL = "/accounts/login/"
 
@@ -200,6 +207,46 @@ class GeoNodeMapTest(TestCase):
                 zip_link = True
         self.assertTrue(zip_link)
 
+    def test_layer_upload_bbox(self):
+        """Test that the bbox format is correct
+
+        Test that it is correctly saved in` database and represented in the
+        properties correctly.
+        """
+        filename = os.path.join(gisdata.GOOD_DATA, 'raster/test_grid.tif')
+        uploaded = file_upload(filename)
+
+        # Check bbox value
+        bbox_x0 = 96.9560000000
+        bbox_x1 = 97.1097053200
+        bbox_y0 = -5.3035455519999
+        bbox_y1 = -5.5187329999999
+        srid = '4326'
+
+        self.assertEqual(bbox_x0, uploaded.bbox_x0)
+        self.assertEqual(bbox_x1, uploaded.bbox_x1)
+        self.assertEqual(bbox_y0, uploaded.bbox_y0)
+        self.assertEqual(bbox_y1, uploaded.bbox_y1)
+        self.assertEqual(srid, uploaded.srid)
+
+        # bbox format: [xmin,xmax,ymin,ymax]
+        expected_bbox = [
+            96.9560000000,
+            97.1097053200,
+            -5.3035455519999,
+            -5.5187329999999,
+            '4326'
+        ]
+        self.assertEqual(expected_bbox, uploaded.bbox)
+
+        # bbox format: [xmin,ymin,xmax,ymax]
+        expected_bbox_string = (
+            '96.956,-5.303545552,97.10970532,-5.518733')
+        self.assertEqual(expected_bbox_string, uploaded.bbox_string)
+
+        # Clean up
+        uploaded.delete()
+
     def test_layer_upload(self):
         """Test that layers can be uploaded to running GeoNode/GeoServer
         """
@@ -339,11 +386,11 @@ class GeoNodeMapTest(TestCase):
                          'from uploaded layer XML metadata')
 
         self.assertEqual(len(uploaded.keyword_list(
-        )), 5, 'Expected specific number of keywords from uploaded layer XML metadata')
+        )), 7, 'Expected specific number of keywords from uploaded layer XML metadata')
 
-        self.assertEqual(uploaded.keyword_csv,
-                         u'Airport,Airports,Landing Strips,Runway,Runways',
-                         'Expected CSV of keywords from uploaded layer XML metadata')
+        self.assertTrue(
+             u'Airport,Airports,Landing Strips,Runway,Runways' in uploaded.keyword_csv,
+             'Expected CSV of keywords from uploaded layer XML metadata')
 
         self.assertTrue(
             'Landing Strips' in uploaded.keyword_list(),
@@ -532,7 +579,7 @@ class GeoNodeMapTest(TestCase):
         styles = layer.styles + [layer.default_style]
 
         # Delete the Layer using cascading_delete()
-        cascading_delete(gs_cat, shp_layer.typename)
+        cascading_delete(gs_cat, shp_layer.alternate)
 
         # Verify that the styles were deleted
         for style in styles:
@@ -748,7 +795,11 @@ class GeoNodeMapTest(TestCase):
             self.assertEqual(lyr.title, "Test San Andres y Providencia Administrative")
             self.assertEqual(
                 lyr.keyword_list(), [
-                    u'import', u'san andreas', u'test'])
+                    u'features',
+                    u'import',
+                    u'san andreas',
+                    u'test',
+                    u'test_san_andres_y_providencia_administrative'])
             lyr.delete()
 
 
@@ -1135,3 +1186,270 @@ class GeoNodeGeoServerSync(TestCase):
                 attribute.description,
                 '%s_description' % attribute.attribute
             )
+
+
+class LayersStylesApiInteractionTests(
+        ResourceTestCaseMixin, LiveServerTestCase):
+
+    """Test Layers"""
+
+    fixtures = ['initial_data.json', 'bobby']
+
+    def setUp(self):
+        super(LayersStylesApiInteractionTests, self).setUp()
+
+        # Reconnect Geoserver signals
+        if check_ogc_backend(geoserver.BACKEND_PACKAGE):
+            reconnect_signals()
+
+        call_command('loaddata', 'people_data', verbosity=0)
+
+        self.layer_list_url = reverse(
+            'api_dispatch_list',
+            kwargs={
+                'api_name': 'api',
+                'resource_name': 'layers'})
+        self.style_list_url = reverse(
+            'api_dispatch_list',
+            kwargs={
+                'api_name': 'api',
+                'resource_name': 'styles'})
+        filename = os.path.join(gisdata.GOOD_DATA, 'raster/test_grid.tif')
+        self.layer = file_upload(filename)
+        all_public()
+
+    def tearDown(self):
+        Layer.objects.all().delete()
+
+        # Disconnect Geoserver signals
+        if check_ogc_backend(geoserver.BACKEND_PACKAGE):
+            disconnect_signals()
+
+    def test_layer_interaction(self):
+        """Layer API interaction check."""
+        layer_id = self.layer.id
+
+        layer_detail_url = reverse(
+            'api_dispatch_detail',
+            kwargs={
+                'api_name': 'api',
+                'resource_name': 'layers',
+                'id': layer_id
+            }
+        )
+        resp = self.api_client.get(layer_detail_url)
+        self.assertValidJSONResponse(resp)
+        obj = self.deserialize(resp)
+        # Should have links
+        self.assertTrue('links' in obj and obj['links'])
+        # Should have default style
+        self.assertTrue('default_style' in obj and obj['default_style'])
+        # Should have styles
+        self.assertTrue('styles' in obj and obj['styles'])
+
+        # Test filter layers by id
+        filter_url = self.layer_list_url + '?id=' + str(layer_id)
+        resp = self.api_client.get(filter_url)
+        self.assertValidJSONResponse(resp)
+        # This is a list url
+        objects = self.deserialize(resp)['objects']
+        self.assertEqual(len(objects), 1)
+        obj = objects[0]
+        # Should have links
+        self.assertTrue('links' in obj)
+        # Should not have styles
+        self.assertTrue('styles' not in obj)
+        # Should have default_style
+        self.assertTrue('default_style' in obj and obj['default_style'])
+        # Should have resource_uri to browse layer detail
+        self.assertTrue('resource_uri' in obj and obj['resource_uri'])
+
+        prev_obj = obj
+        # Test filter layers by name
+        filter_url = self.layer_list_url + '?name=' + self.layer.name
+        resp = self.api_client.get(filter_url)
+        self.assertValidJSONResponse(resp)
+        # This is a list url
+        objects = self.deserialize(resp)['objects']
+        self.assertEqual(len(objects), 1)
+        obj = objects[0]
+
+        self.assertEqual(obj, prev_obj)
+
+    def test_style_interaction(self):
+        """Style API interaction check."""
+
+        # filter styles by layer id
+        filter_url = self.style_list_url + '?layer__id=' + str(self.layer.id)
+        resp = self.api_client.get(filter_url)
+        self.assertValidJSONResponse(resp)
+        # This is a list url
+        objects = self.deserialize(resp)['objects']
+
+        self.assertEqual(len(objects), 1)
+
+        # filter styles by layer name
+        filter_url = self.style_list_url + '?layer__name=' + self.layer.name
+        resp = self.api_client.get(filter_url)
+        self.assertValidJSONResponse(resp)
+        # This is a list url
+        objects = self.deserialize(resp)['objects']
+
+        self.assertEqual(len(objects), 1)
+
+        # Check necessary list fields
+        obj = objects[0]
+        field_list = [
+            'layer',
+            'name',
+            'title',
+            'style_url',
+            'type',
+            'resource_uri'
+        ]
+
+        # Additional field based on OGC Backend
+        if check_ogc_backend(geoserver.BACKEND_PACKAGE):
+            field_list += [
+                'version',
+                'workspace'
+            ]
+        elif check_ogc_backend(qgis_server.BACKEND_PACKAGE):
+            field_list += [
+                'style_legend_url'
+            ]
+        for f in field_list:
+            self.assertTrue(f in obj)
+
+        if check_ogc_backend(geoserver.BACKEND_PACKAGE):
+            self.assertEqual(obj['type'], 'sld')
+        elif check_ogc_backend(qgis_server.BACKEND_PACKAGE):
+            self.assertEqual(obj['type'], 'qml')
+
+        # Check style detail
+        detail_url = obj['resource_uri']
+        resp = self.api_client.get(detail_url)
+        self.assertValidJSONResponse(resp)
+        obj = self.deserialize(resp)
+
+        # should include body field
+        self.assertTrue('body' in obj and obj['body'])
+
+    @on_ogc_backend(qgis_server.BACKEND_PACKAGE)
+    def test_add_delete_styles(self):
+        """Style API Add/Delete interaction."""
+        # Check styles count
+        style_list_url = reverse(
+            'api_dispatch_list',
+            kwargs={
+                'api_name': 'api',
+                'resource_name': 'styles'
+            }
+        )
+        filter_url = style_list_url + '?layer__name=' + self.layer.name
+        resp = self.api_client.get(filter_url)
+        self.assertValidJSONResponse(resp)
+        objects = self.deserialize(resp)['objects']
+
+        self.assertEqual(len(objects), 1)
+
+        # Fetch default style
+        layer_detail_url = reverse(
+            'api_dispatch_detail',
+            kwargs={
+                'api_name': 'api',
+                'resource_name': 'layers',
+                'id': self.layer.id
+            }
+        )
+        resp = self.api_client.get(layer_detail_url)
+        self.assertValidJSONResponse(resp)
+        obj = self.deserialize(resp)
+        # Take default style url from Layer detail info
+        default_style_url = obj['default_style']
+        resp = self.api_client.get(default_style_url)
+        self.assertValidJSONResponse(resp)
+        obj = self.deserialize(resp)
+        style_body = obj['body']
+
+        style_stream = StringIO(style_body)
+        # Add virtual filename
+        style_stream.name = 'style.qml'
+        data = {
+            'layer__id': self.layer.id,
+            'name': 'new_style',
+            'title': 'New Style',
+            'style': style_stream
+        }
+        # Use default client to request
+        resp = self.client.post(style_list_url, data=data)
+
+        # Should not be able to add style without authentication
+        self.assertEqual(resp.status_code, 403)
+
+        # Login using anonymous user
+        self.client.login(username='AnonymousUser')
+        style_stream.seek(0)
+        resp = self.client.post(style_list_url, data=data)
+        # Should not be able to add style without correct permission
+        self.assertEqual(resp.status_code, 403)
+        self.client.logout()
+
+        # Use admin credentials
+        self.client.login(username='admin', password='admin')
+        style_stream.seek(0)
+        resp = self.client.post(style_list_url, data=data)
+        self.assertEqual(resp.status_code, 201)
+
+        # Check styles count
+        filter_url = style_list_url + '?layer__name=' + self.layer.name
+        resp = self.api_client.get(filter_url)
+        self.assertValidJSONResponse(resp)
+        objects = self.deserialize(resp)['objects']
+
+        self.assertEqual(len(objects), 2)
+
+        # Attempt to set default style
+        resp = self.api_client.get(layer_detail_url)
+        self.assertValidJSONResponse(resp)
+        obj = self.deserialize(resp)
+        # Get style list and get new default style
+        styles = obj['styles']
+        new_default_style = None
+        for s in styles:
+            if not s == obj['default_style']:
+                new_default_style = s
+                break
+        obj['default_style'] = new_default_style
+        # Put the new update
+        patch_data = {
+            'default_style': new_default_style
+        }
+        resp = self.client.patch(
+            layer_detail_url,
+            data=json.dumps(patch_data),
+            content_type='application/json')
+        self.assertEqual(resp.status_code, 200)
+
+        # check new default_style
+        resp = self.api_client.get(layer_detail_url)
+        self.assertValidJSONResponse(resp)
+        obj = self.deserialize(resp)
+        self.assertEqual(obj['default_style'], new_default_style)
+
+        # Attempt to delete style
+        filter_url = style_list_url + '?layer__id=%d&name=%s' % (
+            self.layer.id, data['name'])
+        resp = self.api_client.get(filter_url)
+        self.assertValidJSONResponse(resp)
+        objects = self.deserialize(resp)['objects']
+
+        resource_uri = objects[0]['resource_uri']
+
+        resp = self.client.delete(resource_uri)
+        self.assertEqual(resp.status_code, 204)
+
+        resp = self.api_client.get(filter_url)
+        meta = self.deserialize(resp)['meta']
+
+        self.assertEqual(meta['total_count'], 0)

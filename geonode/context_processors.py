@@ -133,6 +133,9 @@ def resource_urls(request):
             False
         ),
         THESAURI_FILTERS=[t['name'] for t in settings.THESAURI if t.get('filter')],
+        MAP_CLIENT_USE_CROSS_ORIGIN_CREDENTIALS=getattr(
+            settings, 'MAP_CLIENT_USE_CROSS_ORIGIN_CREDENTIALS', False
+        ),
         OGC_SERVER=getattr(settings, 'OGC_SERVER', None),
     )
     defaults['message_create_url'] = 'message_create' if not settings.USER_MESSAGES_ALLOW_MULTIPLE_RECIPIENTS\
