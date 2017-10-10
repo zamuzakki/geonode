@@ -29,6 +29,7 @@ import logging
 from StringIO import StringIO
 import traceback
 import gisdata
+from decimal import Decimal
 
 from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist
@@ -218,11 +219,11 @@ class GeoNodeMapTest(TestCase):
         uploaded = file_upload(filename)
 
         # Check bbox value
-        bbox_x0 = 96.9560000000
-        bbox_x1 = 97.1097053200
-        bbox_y0 = -5.3035455519999
-        bbox_y1 = -5.5187329999999
-        srid = '4326'
+        bbox_x0 = Decimal('96.9560000000')
+        bbox_x1 = Decimal('97.1097053200')
+        bbox_y0 = Decimal('-5.3035455520')
+        bbox_y1 = Decimal('-5.5187330000')
+        srid = u'EPSG:4326'
 
         self.assertEqual(bbox_x0, uploaded.bbox_x0)
         self.assertEqual(bbox_x1, uploaded.bbox_x1)
@@ -232,17 +233,17 @@ class GeoNodeMapTest(TestCase):
 
         # bbox format: [xmin,xmax,ymin,ymax]
         expected_bbox = [
-            96.9560000000,
-            97.1097053200,
-            -5.3035455519999,
-            -5.5187329999999,
-            '4326'
+            Decimal('96.9560000000'),
+            Decimal('97.1097053200'),
+            Decimal('-5.3035455520'),
+            Decimal('-5.5187330000'),
+            u'EPSG:4326'
         ]
         self.assertEqual(expected_bbox, uploaded.bbox)
 
         # bbox format: [xmin,ymin,xmax,ymax]
         expected_bbox_string = (
-            '96.956,-5.303545552,97.10970532,-5.518733')
+            '96.9560000000,-5.3035455520,97.1097053200,-5.5187330000')
         self.assertEqual(expected_bbox_string, uploaded.bbox_string)
 
         # Clean up
@@ -386,8 +387,15 @@ class GeoNodeMapTest(TestCase):
                          'Expected specific supplemental information '
                          'from uploaded layer XML metadata')
 
-        self.assertEqual(len(uploaded.keyword_list(
-        )), 7, 'Expected specific number of keywords from uploaded layer XML metadata')
+        if check_ogc_backend(geoserver.BACKEND_PACKAGE):
+            self.assertEqual(
+                len(uploaded.keyword_list()), 7,
+                'Expected specific number of keywords from uploaded layer XML metadata')
+        elif check_ogc_backend(qgis_server.BACKEND_PACKAGE):
+            # QGIS Server backend doesn't have GeoServer assigned keywords.
+            self.assertEqual(
+                len(uploaded.keyword_list()), 5,
+                'Expected specific number of keywords from uploaded layer XML metadata')
 
         self.assertTrue(
              u'Airport,Airports,Landing Strips,Runway,Runways' in uploaded.keyword_csv,
@@ -825,13 +833,23 @@ class GeoNodeMapTest(TestCase):
                 self.assertIsNotNone(lyr)
                 self.assertEqual(lyr.name, "test_san_andres_y_providencia_administrative")
                 self.assertEqual(lyr.title, "Test San Andres y Providencia Administrative")
-                self.assertEqual(
-                    lyr.keyword_list(), [
+                default_keywords = [
+                    u'import',
+                    u'san andreas',
+                    u'test',
+                ]
+                if check_ogc_backend(geoserver.BACKEND_PACKAGE):
+                    geoserver_keywords = [
                         u'features',
-                        u'import',
-                        u'san andreas',
-                        u'test',
-                        u'test_san_andres_y_providencia_administrative'])
+                        u'test_san_andres_y_providencia_administrative'
+                    ]
+                    self.assertEqual(
+                        lyr.keyword_list(),
+                        default_keywords + geoserver_keywords)
+                elif check_ogc_backend(qgis_server.BACKEND_PACKAGE):
+                    self.assertEqual(
+                        lyr.keyword_list(),
+                        default_keywords)
             finally:
                 # Clean up and completely delete the layer
                 lyr.delete()

@@ -519,6 +519,7 @@ def test(options):
                                                  '.tests '.join(GEONODE_APPS)))
 
 
+
 @task
 def test_javascript(options):
     with pushd('geonode/static/geonode'):

@@ -45,7 +45,6 @@ from django.db.models import Q
 # Geonode functionality
 from geonode import GeoNodeException, geoserver, qgis_server
 from geonode.people.utils import get_valid_user
-from geonode.base.models import ResourceBase
 from geonode.layers.models import Layer, UploadSession, LayerFile
 from geonode.base.models import Link, SpatialRepresentationType,  \
     TopicCategory, Region, License, ResourceBase
@@ -473,7 +472,6 @@ def file_upload(filename, name=None, user=None, title=None, abstract=None,
         is_published = False
 
     defaults = {
-        'upload_session': upload_session,
         'title': title,
         'abstract': abstract,
         'owner': user,
@@ -540,15 +538,22 @@ def file_upload(filename, name=None, user=None, title=None, abstract=None,
     # Create a Django object.
     with transaction.atomic():
         if not metadata_upload_form:
-            layer, created = Layer.objects.get_or_create(
+            layer, created = Layer.objects.update_or_create(
                 name=valid_name,
                 defaults=defaults
             )
         elif identifier:
-            layer, created = Layer.objects.get_or_create(
+            layer, created = Layer.objects.update_or_create(
                 uuid=identifier,
                 defaults=defaults
             )
+        else:
+            created = False
+
+        if created:
+            # Assign uploaded file
+            layer.upload_session = upload_session
+            layer.save()
 
     # Delete the old layers if overwrite is true
     # and the layer was not just created

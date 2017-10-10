@@ -590,7 +590,6 @@ def set_owner_permissions(resource):
             assign_perm(perm, resource.owner, resource.get_self_resource())
 
 
-@on_ogc_backend(geoserver.BACKEND_PACKAGE)
 def remove_object_permissions(instance):
     """Remove object perimssions on give resource.
         If is a layer removes the layer specific permissions then the resourcebase permissions

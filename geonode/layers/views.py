@@ -378,6 +378,11 @@ def layer_detail(request, layername, template='layers/layer_detail.html'):
             granules = {"features": []}
             all_granules = {"features": []}
 
+    # a flag to be used for geosafe
+    show_popup = False
+    if 'show_popup' in request.GET and request.GET["show_popup"]:
+        show_popup = True
+
     context_dict = {
         "resource": layer,
         'perms_list': get_perms(request.user, layer.get_self_resource()),
@@ -388,6 +393,7 @@ def layer_detail(request, layername, template='layers/layer_detail.html'):
         "wps_enabled": settings.OGC_SERVER['default']['WPS_ENABLED'],
         "granules": granules,
         "all_granules": all_granules,
+        "show_popup": show_popup,
         "filter": filter,
     }
 

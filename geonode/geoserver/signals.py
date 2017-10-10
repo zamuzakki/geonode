@@ -72,6 +72,7 @@ def geoserver_pre_save(*args, **kwargs):
     pass
 
 
+@on_ogc_backend(geoserver.BACKEND_PACKAGE)
 def geoserver_post_save(instance, sender, **kwargs):
     from geonode.messaging import producer
     instance_dict = model_to_dict(instance)

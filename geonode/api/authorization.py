@@ -17,16 +17,13 @@
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 #########################################################################
-from guardian.utils import get_anonymous_user
 
-from geonode.base.models import ResourceBase
 from tastypie.authorization import DjangoAuthorization
 from tastypie.exceptions import Unauthorized
 
 from guardian.shortcuts import get_objects_for_user
 
 from geonode import geoserver, qgis_server
-from geonode.layers.models import Layer, Style
 from geonode.utils import check_ogc_backend
 
 

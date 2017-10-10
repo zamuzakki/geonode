@@ -288,7 +288,12 @@
                     </div>
                 {% endif %}
                 {% if links_download %}
+                    {% if not links %}
+                    {#  if links doesn't exist, make this tab active by default #}
+                    <div class="tab-pane active" id="download_tab2">
+                    {% else %}
                     <div class="tab-pane" id="download_tab2">
+                    {% endif %}
                       </br>
                       {% if layer_type == "vector" %}
                         <button type="button" id = "button-toggle" class="btn btn-primary btn-circle" data-toggle="button" data-toggle="tooltip" title="Click to filter the layer">
@@ -921,6 +926,9 @@
         });
 
       });
+      {% if show_popup %}
+        $('#download-layer').modal('toggle');
+      {% endif %}
     </script>
 
     {% if GEONODE_SECURITY_ENABLED %}

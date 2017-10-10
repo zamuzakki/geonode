@@ -100,12 +100,20 @@ class LayerUploadForm(forms.Form):
     metadata_upload_form = forms.BooleanField(required=False)
     style_upload_form = forms.BooleanField(required=False)
 
-    spatial_files = (
+    spatial_files = [
         "base_file",
         "dbf_file",
         "shx_file",
         "prj_file",
-        "xml_file")
+        "xml_file"]
+
+    # Adding style file based on the backend
+    if check_ogc_backend(geoserver.BACKEND_PACKAGE):
+        spatial_files.append('sld_file')
+    if check_ogc_backend(qgis_server.BACKEND_PACKAGE):
+        spatial_files.append('qml_file')
+
+    spatial_files = tuple(spatial_files)
 
     def clean(self):
         cleaned = super(LayerUploadForm, self).clean()
@@ -150,10 +158,6 @@ class LayerUploadForm(forms.Form):
             if check_ogc_backend(geoserver.BACKEND_PACKAGE):
                 if cleaned["sld_file"] is not None:
                     sld_file = cleaned["sld_file"].name
-            # QML Style only available in QGIS Server backend
-            if check_ogc_backend(qgis_server.BACKEND_PACKAGE):
-                if cleaned["qml_file"] is not None:
-                    sld_file = cleaned["qml_file"].name
 
         if not cleaned["metadata_upload_form"] and not cleaned["style_upload_form"] and base_ext.lower() not in (
                 ".shp", ".tif", ".tiff", ".geotif", ".geotiff", ".asc"):
