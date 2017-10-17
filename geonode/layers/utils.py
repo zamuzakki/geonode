@@ -318,6 +318,7 @@ def get_resolution(filename):
 
 
 def get_bbox(filename):
+    """Return bbox in the format [xmin,xmax,ymin,ymax]."""
     from django.contrib.gis.gdal import DataSource
     bbox_x0, bbox_y0, bbox_x1, bbox_y1 = None, None, None, None
 
@@ -346,10 +347,11 @@ def get_bbox(filename):
             yarr.reverse()
 
         # ext has four corner points, get a bbox from them.
-        bbox_x0 = ext[0][0]
-        bbox_y0 = ext[0][1]
-        bbox_x1 = ext[2][0]
-        bbox_y1 = ext[2][1]
+        # order is important, so make sure min and max is correct.
+        bbox_x0 = min(ext[0][0], ext[2][0])
+        bbox_y0 = min(ext[0][1], ext[2][1])
+        bbox_x1 = max(ext[0][0], ext[2][0])
+        bbox_y1 = max(ext[0][1], ext[2][1])
 
     return [bbox_x0, bbox_x1, bbox_y0, bbox_y1]
 
@@ -472,6 +474,7 @@ def file_upload(filename, name=None, user=None, title=None, abstract=None,
         is_published = False
 
     defaults = {
+        'upload_session': upload_session,
         'title': title,
         'abstract': abstract,
         'owner': user,
@@ -538,22 +541,15 @@ def file_upload(filename, name=None, user=None, title=None, abstract=None,
     # Create a Django object.
     with transaction.atomic():
         if not metadata_upload_form:
-            layer, created = Layer.objects.update_or_create(
+            layer, created = Layer.objects.get_or_create(
                 name=valid_name,
                 defaults=defaults
             )
         elif identifier:
-            layer, created = Layer.objects.update_or_create(
+            layer, created = Layer.objects.get_or_create(
                 uuid=identifier,
                 defaults=defaults
             )
-        else:
-            created = False
-
-        if created:
-            # Assign uploaded file
-            layer.upload_session = upload_session
-            layer.save()
 
     # Delete the old layers if overwrite is true
     # and the layer was not just created
@@ -563,6 +559,10 @@ def file_upload(filename, name=None, user=None, title=None, abstract=None,
         if layer.upload_session:
             layer.upload_session.layerfile_set.all().delete()
         layer.upload_session = upload_session
+
+        # update with new information
+        Layer.objects.filter(id=layer.id).update(**defaults)
+        layer.refresh_from_db()
 
         # Pass the parameter overwrite to tell whether the
         # geoserver_post_save_signal should upload the new file or not

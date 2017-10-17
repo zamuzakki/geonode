@@ -28,7 +28,7 @@ import json
 from datetime import datetime
 
 import gisdata
-from django.test import TestCase, LiveServerTestCase
+from django.test import TestCase
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.forms import ValidationError
 from django.contrib.contenttypes.models import ContentType
@@ -38,6 +38,7 @@ from django.contrib.auth.models import Group
 from django.db.models import Count
 from django.contrib.auth import get_user_model
 from agon_ratings.models import OverallRating
+from django.test.testcases import LiveServerTestCase
 
 from guardian.shortcuts import get_anonymous_user
 from guardian.shortcuts import assign_perm, remove_perm

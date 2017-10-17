@@ -28,6 +28,8 @@ import logging
 
 from StringIO import StringIO
 import traceback
+from urlparse import urljoin
+
 import gisdata
 from decimal import Decimal
 
@@ -40,8 +42,7 @@ from django.contrib.staticfiles.templatetags import staticfiles
 from django.contrib.auth import get_user_model
 # from guardian.shortcuts import assign_perm
 from django.test.testcases import LiveServerTestCase
-from geonode.base.populate_test_data import reconnect_signals, all_public, \
-    disconnect_signals
+from geonode.base.populate_test_data import reconnect_signals, all_public
 from tastypie.test import ResourceTestCaseMixin
 
 from geonode.qgis_server.models import QGISServerLayer
@@ -70,6 +71,9 @@ from geonode.utils import check_ogc_backend
 LOGIN_URL = "/accounts/login/"
 
 logging.getLogger("south").setLevel(logging.INFO)
+
+# Reconnect post_save signals that is disconnected by populate_test_data
+reconnect_signals()
 
 """
  HOW TO RUN THE TESTS
@@ -221,8 +225,8 @@ class GeoNodeMapTest(TestCase):
         # Check bbox value
         bbox_x0 = Decimal('96.9560000000')
         bbox_x1 = Decimal('97.1097053200')
-        bbox_y0 = Decimal('-5.3035455520')
-        bbox_y1 = Decimal('-5.5187330000')
+        bbox_y0 = Decimal('-5.5187330000')
+        bbox_y1 = Decimal('-5.3035455520')
         srid = u'EPSG:4326'
 
         self.assertEqual(bbox_x0, uploaded.bbox_x0)
@@ -235,15 +239,15 @@ class GeoNodeMapTest(TestCase):
         expected_bbox = [
             Decimal('96.9560000000'),
             Decimal('97.1097053200'),
-            Decimal('-5.3035455520'),
             Decimal('-5.5187330000'),
+            Decimal('-5.3035455520'),
             u'EPSG:4326'
         ]
         self.assertEqual(expected_bbox, uploaded.bbox)
 
         # bbox format: [xmin,ymin,xmax,ymax]
         expected_bbox_string = (
-            '96.9560000000,-5.3035455520,97.1097053200,-5.5187330000')
+            '96.9560000000,-5.5187330000,97.1097053200,-5.3035455520')
         self.assertEqual(expected_bbox_string, uploaded.bbox_string)
 
         # Clean up
@@ -844,12 +848,12 @@ class GeoNodeMapTest(TestCase):
                         u'test_san_andres_y_providencia_administrative'
                     ]
                     self.assertEqual(
-                        lyr.keyword_list(),
-                        default_keywords + geoserver_keywords)
+                        set(lyr.keyword_list()),
+                        set(default_keywords + geoserver_keywords))
                 elif check_ogc_backend(qgis_server.BACKEND_PACKAGE):
                     self.assertEqual(
-                        lyr.keyword_list(),
-                        default_keywords)
+                        set(lyr.keyword_list()),
+                        set(default_keywords))
             finally:
                 # Clean up and completely delete the layer
                 lyr.delete()
@@ -996,8 +1000,10 @@ xsi:schemaLocation="http://www.opengis.net/sld http://schemas.opengis.net/sld/1.
             # request getCapabilities: layer must be there as it is published and
             # advertised: we need to check if in response there is
             # <Name>geonode:san_andres_y_providencia_water</Name>
-            url = 'http://localhost:8080/geoserver/ows?' \
+            geoserver_base_url = settings.OGC_SERVER['default']['LOCATION']
+            get_capabilities_url = 'ows?' \
                 'service=wms&version=1.3.0&request=GetCapabilities'
+            url = urljoin(geoserver_base_url, get_capabilities_url)
             str_to_check = '<Name>geonode:san_andres_y_providencia_poi</Name>'
             request = urllib2.Request(url)
             response = urllib2.urlopen(request)
@@ -1253,10 +1259,6 @@ class LayersStylesApiInteractionTests(
     def setUp(self):
         super(LayersStylesApiInteractionTests, self).setUp()
 
-        # Reconnect Geoserver signals
-        if check_ogc_backend(geoserver.BACKEND_PACKAGE):
-            reconnect_signals()
-
         call_command('loaddata', 'people_data', verbosity=0)
 
         self.layer_list_url = reverse(
@@ -1275,10 +1277,6 @@ class LayersStylesApiInteractionTests(
 
     def tearDown(self):
         Layer.objects.all().delete()
-
-        # Disconnect Geoserver signals
-        if check_ogc_backend(geoserver.BACKEND_PACKAGE):
-            disconnect_signals()
 
     def test_layer_interaction(self):
         """Layer API interaction check."""
