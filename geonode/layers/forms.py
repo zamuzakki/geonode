@@ -104,8 +104,7 @@ class LayerUploadForm(forms.Form):
         "base_file",
         "dbf_file",
         "shx_file",
-        "prj_file",
-        "xml_file"]
+        "prj_file"]
 
     # Adding style file based on the backend
     if check_ogc_backend(geoserver.BACKEND_PACKAGE):
@@ -138,8 +137,6 @@ class LayerUploadForm(forms.Form):
                 elif ext.lower() == '.xml':
                     xml_file = filename
                 elif ext.lower() == '.sld':
-                    sld_file = filename
-                elif ext.lower() == '.qml':
                     sld_file = filename
             if base_name is None:
                 raise forms.ValidationError(

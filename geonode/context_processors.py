@@ -76,6 +76,10 @@ def resource_urls(request):
             settings,
             'OPENGRAPH_ENABLED',
             False),
+        ADMIN_MODERATE_UPLOADS=getattr(
+            settings,
+            'ADMIN_MODERATE_UPLOADS',
+            False),
         HAYSTACK_SEARCH=getattr(
             settings,
             'HAYSTACK_SEARCH',
@@ -117,6 +121,7 @@ def resource_urls(request):
             'METADATA',
             'never'),
         USE_NOTIFICATIONS=has_notifications,
+        USE_MONITORING='geonode.contrib.monitoring' in settings.INSTALLED_APPS and settings.MONITORING_ENABLED,
         DEFAULT_ANONYMOUS_VIEW_PERMISSION=getattr(settings, 'DEFAULT_ANONYMOUS_VIEW_PERMISSION', False),
         DEFAULT_ANONYMOUS_DOWNLOAD_PERMISSION=getattr(settings, 'DEFAULT_ANONYMOUS_DOWNLOAD_PERMISSION', False),
         EXIF_ENABLED=getattr(

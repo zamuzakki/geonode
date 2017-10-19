@@ -77,7 +77,9 @@ class LayerTests(TestCase):
                 args=(
                     invalid_layer_typename,
                 )))
-        self.assertEquals(response.status_code, 404)
+        self.assertEquals(response.status_code, 200)
+        response_json = json.loads(response.content)
+        self.assertEquals(response_json['authorized'], False)
 
         # First test un-authenticated
         response = self.client.post(
@@ -112,9 +114,8 @@ class LayerTests(TestCase):
                     valid_layer_typename,
                 )))
 
-        # Test that the method returns 401 because it's not a datastore
         response_json = json.loads(response.content)
-        self.assertEquals(response_json['authorized'], False)
+        self.assertEquals(response_json['authorized'], True)
 
         layer = Layer.objects.all()[0]
         layer.storeType = "dataStore"
@@ -248,6 +249,7 @@ class UtilsTests(TestCase):
                 'MAPFISH_PRINT_ENABLED': True,
                 'PRINT_NG_ENABLED': True,
                 'GEONODE_SECURITY_ENABLED': True,
+                'GEOFENCE_SECURITY_ENABLED': True,
                 'GEOGIG_ENABLED': False,
                 'WMST_ENABLED': False,
                 'BACKEND_WRITE_ENABLED': True,
