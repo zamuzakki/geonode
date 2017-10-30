@@ -117,11 +117,11 @@ class CommonModelApi(ModelResource):
         'rating',
     ]
 
-    def build_filters(self, filters=None, **kwargs):
+    def build_filters(self, filters=None, ignore_bad_filters=False, **kwargs):
         if filters is None:
             filters = {}
         orm_filters = super(CommonModelApi, self).build_filters(
-            filters, **kwargs)
+            filters=filters, ignore_bad_filters=ignore_bad_filters, **kwargs)
         if 'type__in' in filters and filters[
                 'type__in'] in FILTER_TYPES.keys():
             orm_filters.update({'type': filters.getlist('type__in')})
@@ -494,23 +494,24 @@ class CommonModelApi(ModelResource):
                                                        Q(owner__username__iexact=str(request.user)))
 
             if settings.RESOURCE_PUBLISHING:
-                if is_manager:
-                    groups = request.user.groups.all()
-                    public_groups = GroupProfile.objects.exclude(access="private").values('group')
-                    try:
-                        anonymous_group = Group.objects.get(name='anonymous')
-                        filter_set = filter_set.filter(
-                            Q(group__isnull=True) | Q(group__in=groups) |
-                            Q(group__in=public_groups) | Q(group=anonymous_group) |
-                            Q(owner__username__iexact=str(request.user)))
-                    except:
-                        filter_set = filter_set.filter(
-                            Q(group__isnull=True) | Q(group__in=groups) |
-                            Q(group__in=public_groups) |
-                            Q(owner__username__iexact=str(request.user)))
-                else:
-                    filter_set = filter_set.filter(Q(is_published=True) |
-                                                   Q(owner__username__iexact=str(request.user)))
+                if not is_admin and not is_staff:
+                    if is_manager:
+                        groups = request.user.groups.all()
+                        public_groups = GroupProfile.objects.exclude(access="private").values('group')
+                        try:
+                            anonymous_group = Group.objects.get(name='anonymous')
+                            filter_set = filter_set.filter(
+                                Q(group__isnull=True) | Q(group__in=groups) |
+                                Q(group__in=public_groups) | Q(group=anonymous_group) |
+                                Q(owner__username__iexact=str(request.user)))
+                        except:
+                            filter_set = filter_set.filter(
+                                Q(group__isnull=True) | Q(group__in=groups) |
+                                Q(group__in=public_groups) |
+                                Q(owner__username__iexact=str(request.user)))
+                    else:
+                        filter_set = filter_set.filter(Q(is_published=True) |
+                                                       Q(owner__username__iexact=str(request.user)))
 
             try:
                 anonymous_group = Group.objects.get(name='anonymous')
@@ -810,13 +811,13 @@ class LayerResource(CommonModelApi):
             try:
                 obj.qgis_default_style = obj.qgis_layer.default_style
             except:
-                pass
+                obj.qgis_default_style = None
 
             # Styles
             try:
                 obj.qgis_styles = obj.qgis_layer.styles
             except:
-                pass
+                obj.qgis_styles = []
         return obj
 
     def build_bundle(

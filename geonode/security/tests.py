@@ -37,7 +37,7 @@ from geonode.groups.models import Group
 from geonode.utils import check_ogc_backend
 
 
-class BulkPermissionsTests(ResourceTestCaseMixin):
+class BulkPermissionsTests(ResourceTestCaseMixin, TestCase):
     fixtures = ['initial_data.json', 'bobby']
 
     def setUp(self):
