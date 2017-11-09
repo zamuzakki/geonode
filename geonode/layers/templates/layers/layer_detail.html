@@ -410,7 +410,9 @@
       </div>
     </div>
 
-    {% get_obj_perms request.user for resource.layer as "layer_perms" %}
+    {% if GEOSERVER_BASE_URL %}
+      {% get_obj_perms request.user for resource.layer as "layer_perms" %}
+    {% endif %}
 
     <li class="list-group-item">
       <a href="{% url "layer_metadata_detail" resource.alternate %}">
