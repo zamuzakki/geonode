@@ -31,7 +31,6 @@ import re
 
 from django.contrib.gis.geos import GEOSGeometry
 from django.template.response import TemplateResponse
-from lxml import etree
 from requests import Request
 from itertools import chain
 from six import string_types
