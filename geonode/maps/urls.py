@@ -22,12 +22,10 @@ from django.conf.urls import patterns, url
 from django.views.generic import TemplateView
 
 from geonode import geoserver, qgis_server
-from geonode.maps.qgis_server_views import MapCreateView, \
-    MapDetailView, MapEmbedView, MapEditView, MapUpdateView
 from geonode.utils import check_ogc_backend
 
 js_info_dict = {
-    'packages': ('geonode.maps',),
+    'packages': ('geonode.maps', ),
 }
 
 new_map_view = 'new_map'
@@ -39,17 +37,19 @@ if check_ogc_backend(geoserver.BACKEND_PACKAGE):
     map_embed = 'map_embed'
     map_edit = 'map_edit'
     map_json = 'map_json'
-    # TODO qlr for geoserver
-    map_download_qlr = 'map_download_qlr'
-    map_download_leaflet = 'map_download_leaflet'
     map_thumbnail = 'map_thumbnail'
 
 elif check_ogc_backend(qgis_server.BACKEND_PACKAGE):
+    from geonode.maps.qgis_server_views import MapCreateView, \
+        MapDetailView, MapEmbedView, MapEditView, MapUpdateView
+
     new_map_view = MapCreateView.as_view()
     existing_map_view = MapDetailView.as_view()
     map_embed = MapEmbedView.as_view()
+
     from geonode.maps.qgis_server_views import map_download_qlr, \
         map_download_leaflet, set_thumbnail_map
+
     map_download_qlr = map_download_qlr
     map_download_leaflet = map_download_leaflet
     map_edit = MapEditView.as_view()
@@ -62,9 +62,6 @@ urlpatterns = patterns(
         TemplateView.as_view(template_name='maps/map_list.html'),
         {'facet_type': 'maps'},
         name='maps_browse'),
-    url(r'^(?P<mapid>[^/]+)/qlr$',
-        map_download_qlr,
-        name='map_download_qlr'),
     url(r'^new$', new_map_view, name="new_map"),
     url(r'^add_layer$', 'add_layer', name='add_layer'),
     url(r'^new/data$', 'new_map_json', name='new_map_json'),
@@ -75,7 +72,6 @@ urlpatterns = patterns(
     url(r'^(?P<mapid>[^/]+)/edit$', map_edit, name='map_edit'),
     url(r'^(?P<mapid>[^/]+)/data$', map_json, name='map_json'),
     url(r'^(?P<mapid>[^/]+)/download$', 'map_download', name='map_download'),
-    url(r'^(?P<mapid>[^/]+)/download_leaflet', map_download_leaflet, name='map_download_leaflet'),
     url(r'^(?P<mapid>[^/]+)/wmc$', 'map_wmc', name='map_wmc'),
     url(r'^(?P<mapid>[^/]+)/wms$', 'map_wms', name='map_wms'),
     url(r'^(?P<mapid>[^/]+)/remove$', 'map_remove', name='map_remove'),
@@ -104,3 +100,16 @@ urlpatterns = patterns(
         name='maplayer_attributes'),
     # url(r'^change-poc/(?P<ids>\w+)$', 'change_poc', name='maps_change_poc'),
 )
+
+if check_ogc_backend(qgis_server.BACKEND_PACKAGE):
+    # Add QLR url specific for QGIS Server
+    urlpatterns += [
+        url(r'^(?P<mapid>[^/]+)/qlr$',
+            map_download_qlr,
+            name='map_download_qlr',
+            prefix='geonode.maps.views'),
+        url(r'^(?P<mapid>[^/]+)/download_leaflet',
+            map_download_leaflet,
+            name='map_download_leaflet',
+            prefix='geonode.maps.views'),
+    ]

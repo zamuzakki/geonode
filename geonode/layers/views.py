@@ -26,7 +26,6 @@ import base64
 import traceback
 import uuid
 import decimal
-
 import re
 
 from django.contrib.gis.geos import GEOSGeometry
@@ -401,7 +400,7 @@ def layer_detail(request, layername, template='layers/layer_detail.html'):
             group = GroupProfile.objects.get(slug=layer.group.name)
         except GroupProfile.DoesNotExist:
             group = None
-    # a flag to be used for geosafe
+    # a flag to be used for qgis server
     show_popup = False
     if 'show_popup' in request.GET and request.GET["show_popup"]:
         show_popup = True
@@ -925,9 +924,13 @@ def layer_metadata(
     if request.user.is_superuser or request.user.is_staff:
         metadata_author_groups = GroupProfile.objects.all()
     else:
-        all_metadata_author_groups = chain(
-            request.user.group_list_all().distinct(),
-            GroupProfile.objects.exclude(access="private").exclude(access="public-invite"))
+        try:
+            all_metadata_author_groups = chain(
+                request.user.group_list_all().distinct(),
+                GroupProfile.objects.exclude(access="private").exclude(access="public-invite"))
+        except:
+            all_metadata_author_groups = GroupProfile.objects.exclude(
+                access="private").exclude(access="public-invite")
         [metadata_author_groups.append(item) for item in all_metadata_author_groups
             if item not in metadata_author_groups]
 

@@ -31,7 +31,6 @@ from django.core.urlresolvers import reverse
 from django.shortcuts import redirect
 from django.core.serializers.json import DjangoJSONEncoder
 from django.http import HttpResponse, HttpResponseRedirect, HttpResponseNotAllowed, HttpResponseServerError
-from django.http.response import HttpResponseBadRequest
 from django.shortcuts import render_to_response, get_object_or_404, render
 from django.conf import settings
 from django.template import RequestContext
@@ -296,9 +295,13 @@ def map_metadata(request, mapid, template='maps/map_metadata.html'):
     if request.user.is_superuser or request.user.is_staff:
         metadata_author_groups = GroupProfile.objects.all()
     else:
-        all_metadata_author_groups = chain(
-            request.user.group_list_all(),
-            GroupProfile.objects.exclude(access="private").exclude(access="public-invite"))
+        try:
+            all_metadata_author_groups = chain(
+                request.user.group_list_all(),
+                GroupProfile.objects.exclude(access="private").exclude(access="public-invite"))
+        except:
+            all_metadata_author_groups = GroupProfile.objects.exclude(
+                access="private").exclude(access="public-invite")
         [metadata_author_groups.append(item) for item in all_metadata_author_groups
             if item not in metadata_author_groups]
 
@@ -1039,22 +1042,6 @@ def map_download_check(request):
         logger.warn(
             "User tried to check status, but has no download in progress.")
     return HttpResponse(content=content, status=status)
-
-
-def map_download_leaflet(request, mapid):
-    """
-    This function serves as geoserver compatibility.
-    We might need to embed leaflet page on geoserver in the future.
-    """
-    return HttpResponseBadRequest('Sorry, leaflet page has not supported yet')
-
-
-def map_download_qlr(request, mapid):
-    """
-    This function serves as geoserver compatibility.
-    We might need to use QLR on geoserver in the future.
-    """
-    return HttpResponseBadRequest('Sorry, QLR extension has not supported yet')
 
 
 def map_wmc(request, mapid, template="maps/wmc.xml"):
