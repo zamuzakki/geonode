@@ -20,7 +20,7 @@ env:
     # This is the location of docker network bridge
     # So QGIS server can access this address
     SITEURL: http://localhost:8000/
-    GEONODE_PROJECT_PATH: /home/travis/build/kartoza/geonode/
+    QGIS_SERVER_PORT: 9000
     ON_TRAVIS: True
     CELERY_ALWAYS_EAGER: True
 
@@ -49,16 +49,16 @@ install:
   - pip install codecov
 
 before_script:
-  - paver setup
-
-  # For QGIS Server
+  # For QGIS Server Travis steps
   - scripts/misc/qgis_server_setup.sh before_script
+
+  - paver setup
 
 script:
   - paver run_tests --coverage
 
 after_script:
-  # For QGIS Server
+  # For QGIS Server Travis steps
   - scripts/misc/qgis_server_setup.sh after_script
 
   # Cleanup

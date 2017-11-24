@@ -877,11 +877,20 @@ def create_qgis_project(
         qgis_layer = QGISServerLayer.objects.get(layer=layer)
         files = qgis_layer.base_layer_path
         names = layer.name
+        logger.debug('File %s is exists: %s' % (
+            files, str(os.path.exists(files))
+        ))
     elif isinstance(layer, list):
         qgis_layer = []
         for l in layer:
             qgis_layer.append(QGISServerLayer.objects.get(layer=l))
         files = [ql.base_layer_path for ql in qgis_layer]
+
+        for f in files:
+            logger.debug('File %s is exists: %s' % (
+                f, str(os.path.exists(f))
+            ))
+
         files = ';'.join(files)
 
         names = [l.name for l in layer]

@@ -128,6 +128,7 @@ def qgis_server_post_save(instance, sender, **kwargs):
                         base_filename + '.' + ext,
                         QGIS_layer_directory
                     )
+                    logger.debug('Create new basefile')
                 else:
                     # If there is already a file, replace the old one
                     qgis_layer_base_filename = qgis_layer.qgis_layer_path_prefix
@@ -135,8 +136,10 @@ def qgis_server_post_save(instance, sender, **kwargs):
                         base_filename + '.' + ext,
                         qgis_layer_base_filename + '.' + ext
                     )
+                    logger.debug('Overwrite existing basefile')
                 logger.debug(
                     'Copying %s' % base_filename + '.' + ext + ' Success')
+                logger.debug('Into %s' % QGIS_layer_directory)
             except IOError as e:
                 logger.debug(
                     'Copying %s' % base_filename + '.' + ext + ' FAILED ' + e)
@@ -287,6 +290,10 @@ def qgis_server_post_save(instance, sender, **kwargs):
         instance, qgis_layer.qgis_project_path, overwrite=overwrite,
         internal=True)
 
+    logger.debug('Creating the QGIS Project : %s' % response.url)
+    if response.content != 'OK':
+        logger.debug('Result : %s' % response.content)
+
     # Generate style model cache
     style_list(instance, internal=False)
 
@@ -297,10 +304,6 @@ def qgis_server_post_save(instance, sender, **kwargs):
             qml_file.delete()
     except LayerFile.DoesNotExist:
         pass
-
-    logger.debug('Creating the QGIS Project : %s' % response.url)
-    if response.content != 'OK':
-        logger.debug('Result : %s' % response.content)
 
     Link.objects.update_or_create(
         resource=instance.resourcebase_ptr,
