@@ -54,6 +54,7 @@
       {% endif %}
 
       <link href="{% static "geonode/css/base.css" %}" rel="stylesheet" />
+      <link href="{% static "geonode/css/default.css" %}" rel="stylesheet" />
 
       <link rel='stylesheet' id='cookie-law-info-css'  href="{% static "geonode/css/cookie-law-info/cookie-law-info-public.css" %}" type='text/css' media='all' />
       <link rel='stylesheet' id='cookie-law-info-gdpr-css'  href="{% static "geonode/css/cookie-law-info/cookie-law-info-gdpr.css" %}" type='text/css' media='all' />
@@ -265,13 +266,17 @@
   <body class="{% block body_class %}{% endblock %}">
     <!-- Navbar -->
     {% block header %}
-  <nav class="navbar navbar-inverse navbar-fixed-top" role="navigation">
-    <div class="container">
+  <nav class="navbar navbar-fixed-top" role="navigation">
+    <div class="container" style="width: 100%">
         <div class="navbar-header">
         <button type="button" class="navbar-toggle collapsed" data-toggle="collapse" data-target="#navbar" aria-expanded="false" aria-controls="navbar">
           <i class="fa fa-navicon fa-lg"></i>
         </button>
-        <a class="navbar-brand" href="{% url "home" %}">GeoNode</a>
+        <div id="branding">
+            <a class="logo" href="/">
+                <img src="/static/geonode/img/logo-small.svg" width="80" height="32" alt="logo"/>
+            </a>
+        </div>
       </div>
       <div id="navbar" class="navbar-collapse collapse">
         <ul class="nav navbar-nav toolbar">
@@ -338,6 +343,11 @@
 
           {% endblock %}
 
+        </ul>
+        <ul class="nav navbar-nav toolbar">
+            <li><a href="https://www.un-igrac.org/who-we-are" target="_blank">Who We Are</a></li>
+            <li><a href="https://www.un-igrac.org/focal-areas" target="_blank">What We Do</a></li>
+            <li><a href="https://www.un-igrac.org/products-and-services" target="_blank">What We Have For You</a></li>
         </ul>
         <ul class="nav navbar-nav navbar-right">
 
@@ -703,7 +713,7 @@
     </div>
 
     <div id="confirmMsgBoxModalOK" class="modal fade" tabindex="-1" role="dialog" aria-labelledby="myModalLabel" aria-hidden="true">
-      <!-- How to use it: 
+      <!-- How to use it:
         $("#confirmMsgBoxModalOK").find('.modal-title').text('{% trans "Title" %}');
         $("#confirmMsgBoxModalOK").find('.modal-body').text('{% trans "Message. Do you want to proceed?" %}');
         $("#confirmMsgBoxModalOK_control_field").val('your_control_value');
