@@ -19,21 +19,24 @@
 #########################################################################
 """Celery tasks for geonode.services"""
 
-from __future__ import absolute_import
-
 import logging
 
-from celery import shared_task
 from django.db import transaction
 
 from . import enumerations
 from . import models
 from .serviceprocessors import get_service_handler
 
+from geonode.celery_app import app
+from geonode.layers.models import Layer
+from geonode.catalogue.models import catalogue_post_save
+
 logger = logging.getLogger(__name__)
 
 
-@shared_task(bind=True)
+@app.task(bind=True,
+          name='geonode.services.tasks.update.harvest_resource',
+          queue='update',)
 def harvest_resource(self, harvest_job_id):
     harvest_job = models.HarvestJob.objects.get(pk=harvest_job_id)
     harvest_job.update_status(
@@ -52,6 +55,13 @@ def harvest_resource(self, harvest_job_id):
                 harvest_job.resource_id, harvest_job.service)
             result = True
         logger.debug("Resource harvested successfully")
+
+        logger.debug("Updating Layer Metadata ...")
+        try:
+            layer = Layer.objects.get(alternate=harvest_job.resource_id)
+            catalogue_post_save(instance=layer, sender=layer.__class__)
+        except Exception:
+            logger.error("Remote Layer [%s] couldn't be updated" % (harvest_job.resource_id))
     except Exception as err:
         logger.exception(msg="An error has occurred while harvesting "
                              "resource {!r}".format(harvest_job.resource_id))

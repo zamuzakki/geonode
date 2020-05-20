@@ -18,9 +18,7 @@
 #
 #########################################################################
 
-import xml.etree.ElementTree as etree
-
-from optparse import make_option
+from defusedxml import lxml as dlxml
 
 from django.core.management.base import BaseCommand, CommandError
 
@@ -31,24 +29,26 @@ class Command(BaseCommand):
 
     help = 'Load a thesaurus in RDF format into DB'
 
-    option_list = BaseCommand.option_list + (
-        make_option(
+    def add_arguments(self, parser):
+
+        # Named (optional) arguments
+        parser.add_argument(
             '-d',
             '--dry-run',
             action="store_true",
             dest='dryrun',
             default=False,
-            help='Only parse and print the thesaurus file, without perform insertion in the DB.'),
-        make_option(
+            help='Only parse and print the thesaurus file, without perform insertion in the DB.')
+
+        parser.add_argument(
             '--name',
             dest='name',
-            type="string",
-            help='Identifier name for the thesaurus in this GeoNode instance.'),
-        make_option(
+            help='Identifier name for the thesaurus in this GeoNode instance.')
+
+        parser.add_argument(
             '--file',
             dest='file',
-            type="string",
-            help='Full path to a thesaurus in RDF format.'))
+            help='Full path to a thesaurus in RDF format.')
 
     def handle(self, **options):
 
@@ -83,7 +83,7 @@ class Command(BaseCommand):
             'skos': 'http://www.w3.org/2004/02/skos/core#'
         }
 
-        tfile = etree.parse(input_file)
+        tfile = dlxml.parse(input_file)
         root = tfile.getroot()
 
         scheme = root.find('skos:ConceptScheme', ns)
@@ -91,10 +91,10 @@ class Command(BaseCommand):
             raise CommandError("ConceptScheme not found in file")
 
         title = scheme.find('dc:title', ns).text
-        descr = scheme.find('dc:description', ns).text
+        descr = scheme.find('dc:description', ns).text if scheme.find('dc:description', ns) else title
         date_issued = scheme.find('dcterms:issued', ns).text
 
-        print 'Thesaurus "{}" issued on {}'.format(title, date_issued)
+        print('Thesaurus "{}" issued on {}'.format(title, date_issued))
 
         thesaurus = Thesaurus()
         thesaurus.identifier = name
@@ -110,7 +110,7 @@ class Command(BaseCommand):
             about = concept.attrib.get(ABOUT_ATTRIB)
             alt_label = concept.find('skos:altLabel', ns).text
 
-            print 'Concept {} ({})'.format(alt_label, about)
+            print('Concept {} ({})'.format(alt_label, about))
 
             tk = ThesaurusKeyword()
             tk.thesaurus = thesaurus
@@ -124,7 +124,7 @@ class Command(BaseCommand):
                 lang = pref_label.attrib.get(LANG_ATTRIB)
                 label = pref_label.text
 
-                print u'    Label {}: {}'.format(lang, label)
+                print('    Label {}: {}'.format(lang, label))
 
                 tkl = ThesaurusKeywordLabel()
                 tkl.keyword = tk

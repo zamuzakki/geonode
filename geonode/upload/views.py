@@ -42,18 +42,21 @@ import traceback
 import gsimporter
 import tempfile
 
-from httplib import BadStatusLine
+from six import string_types
+from http.client import BadStatusLine
 from django.conf import settings
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied
-from django.core.urlresolvers import reverse
+from django.urls import reverse
 from django.http import HttpResponseRedirect
 from django.utils.html import escape
 from django.shortcuts import get_object_or_404
 from django.shortcuts import render
 from django.views.generic import CreateView, DeleteView
-from geonode.utils import unzip_file
+from geonode.utils import fixup_shp_columnnames
 from geonode.base.enumerations import CHARSETS
+from geonode.monitoring import register_event
+from geonode.monitoring.models import EventType
 
 from .forms import (
     LayerUploadForm,
@@ -62,9 +65,11 @@ from .forms import (
     UploadFileForm,
 )
 from .models import Upload, UploadFile
-from .files import get_scan_hint
-from .files import scan_file
+from .files import (get_scan_hint,
+                    scan_file
+                    )
 from .utils import (
+    _ALLOW_TIME_STEP,
     _SUPPORTED_CRS,
     _ASYNC_UPLOAD,
     _geoserver_down_error_msg,
@@ -90,22 +95,28 @@ def _log(msg, *args):
     logger.debug(msg, *args)
 
 
+def _get_upload_session(req):
+    upload_session = None
+    if 'id' in req.GET:
+        upload_id = str(req.GET['id'])
+        upload_obj = get_object_or_404(
+            Upload, import_id=upload_id, user=req.user)
+        upload_session = upload_obj.get_session()
+    return upload_session
+
+
 def data_upload_progress(req):
     """This would not be needed if geoserver REST did not require admin role
     and is an inefficient way of getting this information"""
-    if 'id' in req.GET:
-        upload_id = str(req.GET['id'])
-        if upload_id in req.session:
-            upload_obj = get_object_or_404(
-                Upload, import_id=upload_id, user=req.user)
-            upload_session = upload_obj.get_session()
-        else:
-            upload_session = req.session[upload_id]
+    upload_session = _get_upload_session(req)
 
-        if upload_session:
-            import_session = upload_session.import_session
+    if upload_session:
+        import_session = upload_session.import_session
+        try:
             progress = import_session.tasks[0].get_progress()
             return json_response(progress)
+        except Exception:
+            pass
 
     return json_response({'state': 'NONE'})
 
@@ -131,11 +142,10 @@ def _select_relevant_files(allowed_extensions, files):
     :param files: list of django files with the files to be filtered
 
     """
-
     result = []
     for django_file in files:
         extension = os.path.splitext(django_file.name)[-1].lower()[1:]
-        if extension in allowed_extensions:
+        if extension in allowed_extensions or get_scan_hint(allowed_extensions):
             already_selected = django_file.name in (f.name for f in result)
             if not already_selected:
                 result.append(django_file)
@@ -156,18 +166,22 @@ def save_step_view(req, session):
     form = LayerUploadForm(req.POST, req.FILES)
     if form.is_valid():
         tempdir = tempfile.mkdtemp(dir=settings.FILE_UPLOAD_TEMP_DIR)
+        logger.debug("valid_extensions: {}".format(form.cleaned_data["valid_extensions"]))
         relevant_files = _select_relevant_files(
             form.cleaned_data["valid_extensions"],
-            req.FILES.itervalues()
+            iter(req.FILES.values())
         )
+        logger.debug("relevant_files: {}".format(relevant_files))
         _write_uploaded_files_to_disk(tempdir, relevant_files)
         base_file = os.path.join(tempdir, form.cleaned_data["base_file"].name)
         name, ext = os.path.splitext(os.path.basename(base_file))
         logger.debug('Name: {0}, ext: {1}'.format(name, ext))
         logger.debug("base_file: {}".format(base_file))
+        scan_hint = get_scan_hint(form.cleaned_data["valid_extensions"])
         spatial_files = scan_file(
             base_file,
-            scan_hint=get_scan_hint(form.cleaned_data["valid_extensions"])
+            scan_hint=scan_hint,
+            charset=form.cleaned_data["charset"]
         )
         logger.debug("spatial_files: {}".format(spatial_files))
         import_session = save_step(
@@ -175,7 +189,7 @@ def save_step_view(req, session):
             name,
             spatial_files,
             overwrite=False,
-            mosaic=form.cleaned_data['mosaic'],
+            mosaic=form.cleaned_data['mosaic'] or scan_hint == 'zip-mosaic',
             append_to_mosaic_opts=form.cleaned_data['append_to_mosaic_opts'],
             append_to_mosaic_name=form.cleaned_data['append_to_mosaic_name'],
             mosaic_time_regex=form.cleaned_data['mosaic_time_regex'],
@@ -183,18 +197,20 @@ def save_step_view(req, session):
             time_presentation=form.cleaned_data['time_presentation'],
             time_presentation_res=form.cleaned_data['time_presentation_res'],
             time_presentation_default_value=form.cleaned_data['time_presentation_default_value'],
-            time_presentation_reference_value=form.cleaned_data['time_presentation_reference_value']
+            time_presentation_reference_value=form.cleaned_data['time_presentation_reference_value'],
+            charset_encoding=form.cleaned_data["charset"]
         )
-
+        import_session.tasks[0].set_charset(form.cleaned_data["charset"])
         sld = None
-
         if spatial_files[0].sld_files:
             sld = spatial_files[0].sld_files[0]
         if not os.path.isfile(os.path.join(tempdir, spatial_files[0].base_file)):
             tmp_files = [f for f in os.listdir(tempdir) if os.path.isfile(os.path.join(tempdir, f))]
             for f in tmp_files:
                 if zipfile.is_zipfile(os.path.join(tempdir, f)):
-                    unzip_file(os.path.join(tempdir, f), '.shp', tempdir=tempdir)
+                    fixup_shp_columnnames(os.path.join(tempdir, f),
+                                          form.cleaned_data["charset"],
+                                          tempdir=tempdir)
 
         _log('provided sld is %s' % sld)
         # upload_type = get_upload_type(base_file)
@@ -202,14 +218,13 @@ def save_step_view(req, session):
             tempdir=tempdir,
             base_file=spatial_files,
             name=name,
+            charset=form.cleaned_data["charset"],
             import_session=import_session,
             layer_abstract=form.cleaned_data["abstract"],
             layer_title=form.cleaned_data["layer_title"],
             permissions=form.cleaned_data["permissions"],
             import_sld_file=sld,
             upload_type=spatial_files[0].file_type.code,
-            geogig=form.cleaned_data['geogig'],
-            geogig_store=form.cleaned_data['geogig_store'],
             time=form.cleaned_data['time'],
             mosaic=form.cleaned_data['mosaic'],
             append_to_mosaic_opts=form.cleaned_data['append_to_mosaic_opts'],
@@ -218,9 +233,7 @@ def save_step_view(req, session):
             mosaic_time_value=form.cleaned_data['mosaic_time_value'],
             user=req.user
         )
-        req.session[str(upload_session.import_session.id)] = upload_session
-        _log('saved session : %s',
-             req.session[str(upload_session.import_session.id)])
+        Upload.objects.update_from_session(upload_session)
         return next_step_response(req, upload_session, force_ajax=True)
     else:
         errors = []
@@ -230,6 +243,8 @@ def save_step_view(req, session):
 
 
 def srs_step_view(request, upload_session):
+    if not upload_session:
+        upload_session = _get_upload_session(request)
     import_session = upload_session.import_session
     assert import_session is not None
 
@@ -303,6 +318,8 @@ def srs_step_view(request, upload_session):
 
 
 def csv_step_view(request, upload_session):
+    if not upload_session:
+        upload_session = _get_upload_session(request)
     import_session = upload_session.import_session
     assert import_session is not None
 
@@ -313,7 +330,7 @@ def csv_step_view(request, upload_session):
     # if so, can proceed directly to next step
     attributes = import_session.tasks[0].layer.attributes
     for attr in attributes:
-        if attr.binding == u'com.vividsolutions.jts.geom.Point':
+        if attr.binding == 'com.vividsolutions.jts.geom.Point':
             upload_session.completed_step = 'csv'
             return next_step_response(request, upload_session)
 
@@ -334,13 +351,16 @@ def csv_step_view(request, upload_session):
         lng_candidate = None
         non_str_in_headers = []
         for candidate in attributes:
-            if not isinstance(candidate.name, basestring):
+            if not isinstance(candidate.name, string_types):
                 non_str_in_headers.append(str(candidate.name))
-            if candidate.name in point_candidates:
-                if is_latitude(candidate.name):
-                    lat_candidate = candidate.name
-                elif is_longitude(candidate.name):
-                    lng_candidate = candidate.name
+            if is_latitude(candidate.name):
+                lat_candidate = candidate.name
+                if lat_candidate and lat_candidate not in point_candidates:
+                    point_candidates.append(lat_candidate)
+            elif is_longitude(candidate.name):
+                lng_candidate = candidate.name
+                if lng_candidate and lng_candidate not in point_candidates:
+                    point_candidates.append(lng_candidate)
         if request.method == 'POST':
             guessed_lat_or_lng = False
             selected_lat = lat_field
@@ -371,9 +391,9 @@ def csv_step_view(request, upload_session):
     elif request.method == 'POST':
         if not lat_field or not lng_field:
             error = 'Please choose which columns contain the latitude and longitude data.'
-        elif (lat_field not in point_candidates or
-              lng_field not in point_candidates):
-            error = 'Invalid latitude/longitude columns'
+        # elif (lat_field not in point_candidates or
+        #       lng_field not in point_candidates):
+        #     error = 'Invalid latitude/longitude columns'
         elif lat_field == lng_field:
             error = 'You cannot select the same column for latitude and longitude data.'
 
@@ -393,6 +413,8 @@ def csv_step_view(request, upload_session):
 
 
 def check_step_view(request, upload_session):
+    if not upload_session:
+        upload_session = _get_upload_session(request)
     import_session = upload_session.import_session
     assert import_session is not None
 
@@ -411,13 +433,15 @@ def check_step_view(request, upload_session):
                     upload_session.completed_step = 'check'
                 else:
                     # This command skip completely 'time' configuration
-                    upload_session.completed_step = 'time'
+                    upload_session.completed_step = 'time' if _ALLOW_TIME_STEP else 'check'
     elif request.method != 'POST':
         raise Exception()
     return next_step_response(request, upload_session)
 
 
 def create_time_form(request, upload_session, form_data):
+    if not upload_session:
+        upload_session = _get_upload_session(request)
     feature_type = upload_session.import_session.tasks[0].layer
 
     (has_time, layer_values) = layer_eligible_for_time_dimension(
@@ -442,6 +466,8 @@ def create_time_form(request, upload_session, form_data):
 
 
 def time_step_view(request, upload_session):
+    if not upload_session:
+        upload_session = _get_upload_session(request)
     import_session = upload_session.import_session
     assert import_session is not None
 
@@ -456,16 +482,17 @@ def time_step_view(request, upload_session):
                     'time_form': create_time_form(request, upload_session, None),
                     'layer_name': layer.name,
                     'layer_values': layer_values,
-                    'layer_attributes': layer_values[0].keys(),
+                    'layer_attributes': list(layer_values[0].keys()),
                     'async_upload': is_async_step(upload_session)
                 }
+                upload_session.completed_step = 'check'
                 return render(request, 'upload/layer_upload_time.html', context=context)
             else:
-                upload_session.completed_step = 'time'
+                upload_session.completed_step = 'time' if _ALLOW_TIME_STEP else 'check'
                 return next_step_response(request, upload_session)
         else:
             # TODO: Error
-            upload_session.completed_step = 'time'
+            upload_session.completed_step = 'check'
             return next_step_response(request, upload_session)
     elif request.method != 'POST':
         raise Exception()
@@ -499,10 +526,9 @@ def time_step_view(request, upload_session):
     upload_session.import_session = import_session.reload()
 
     if start_attribute_and_type:
-        upload_session.completed_step = 'check'
-
         def tx(type_name):
-            return None if type_name is None or type_name == 'Date' \
+            # return None if type_name is None or type_name == 'Date' \
+            return None if type_name is None \
                 else 'DateFormatTransform'
         end_attribute, end_type = cleaned.get('end_attribute', (None, None))
         time_step(
@@ -517,14 +543,15 @@ def time_step_view(request, upload_session):
             precision_value=cleaned['precision_value'],
             precision_step=cleaned['precision_step'],
         )
-    else:
-        upload_session.completed_step = 'time'
 
+    upload_session.completed_step = 'check'
     return next_step_response(request, upload_session)
 
 
 def final_step_view(req, upload_session):
     _json_response = None
+    if not upload_session:
+        upload_session = _get_upload_session(req)
     if upload_session:
         import_session = upload_session.import_session
         _log('Checking session %s validity', import_session.id)
@@ -560,12 +587,16 @@ def final_step_view(req, upload_session):
                         'success': True
                     }
                 )
+
+                register_event(req, EventType.EVENT_UPLOAD, saved_layer)
+
                 return _json_response
             except LayerNotReady:
+                force_ajax = '&force_ajax=true' if 'force_ajax' in req.GET and req.GET['force_ajax'] == 'true' else ''
                 return json_response({'status': 'pending',
                                       'success': True,
                                       'id': req.GET['id'],
-                                      'redirect_to': '/upload/final' + "?id=%s" % req.GET['id']})
+                                      'redirect_to': '/upload/final' + "?id=%s%s" % (req.GET['id'], force_ajax)})
     else:
         # url = reverse('layer_browse') + '?limit={}'.format(settings.CLIENT_RESULTS_LIMIT)
         url = "upload/layer_upload_invalid.html"
@@ -595,6 +626,9 @@ _steps = {
 @login_required
 def view(req, step):
     """Main uploader view"""
+    from django.contrib import auth
+    if not auth.get_user(req).is_authenticated:
+        return error_response(req, errors=["Not Authorized"])
     upload_session = None
     upload_id = req.GET.get('id', None)
 
@@ -607,13 +641,13 @@ def view(req, step):
                 user=req.user)
             session = upload_obj.get_session()
             if session:
-                req.session[upload_id] = session
                 return next_step_response(req, session)
         step = 'save'
 
         # delete existing session
         if upload_id and upload_id in req.session:
             del req.session[upload_id]
+            req.session.modified = True
     else:
         if not upload_id:
             return render(
@@ -628,8 +662,8 @@ def view(req, step):
             if session:
                 upload_session = session
             else:
-                upload_session = req.session[upload_id]
-        except BaseException:
+                upload_session = _get_upload_session(req)
+        except Exception:
             traceback.print_exc()
     try:
         if req.method == 'GET' and upload_session:
@@ -646,7 +680,10 @@ def view(req, step):
             if step == 'final':
                 delete_session = True
                 try:
-                    resp_js = json.loads(resp.content)
+                    content = resp.content
+                    if isinstance(content, bytes):
+                        content = content.decode('UTF-8')
+                    resp_js = json.loads(content)
                     delete_session = resp_js.get('status') != 'pending'
 
                     if delete_session:
@@ -654,15 +691,11 @@ def view(req, step):
                         Upload.objects.update_from_session(upload_session)
                         upload_session = None
                         del req.session[upload_id]
-                except BaseException:
+                        req.session.modified = True
+                except Exception:
                     pass
-            else:
-                try:
-                    req.session[upload_id] = upload_session
-                except BaseException:
-                    traceback.print_exc()
-        elif upload_id in req.session:
-            upload_session = req.session[upload_id]
+        else:
+            upload_session = _get_upload_session(req)
         if upload_session:
             Upload.objects.update_from_session(upload_session)
         return resp

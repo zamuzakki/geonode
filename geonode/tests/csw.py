@@ -18,25 +18,27 @@
 #
 #########################################################################
 
-import glob
+from .base import GeoNodeBaseTestSupport
+
 import os
-from unittest import TestCase
-from lxml import etree
+import glob
 import gisdata
-from geonode.catalogue import get_catalogue
-from geonode.utils import check_ogc_backend
+import logging
+
+from lxml import etree
+from defusedxml import lxml as dlxml
+
+from django.conf import settings
+
 from geonode import geoserver, qgis_server
+from geonode.utils import check_ogc_backend
+from geonode.catalogue import get_catalogue
+
+logger = logging.getLogger(__name__)
 
 
-class GeoNodeCSWTest(TestCase):
+class GeoNodeCSWTest(GeoNodeBaseTestSupport):
     """Tests geonode.catalogue app/module"""
-
-    def setUp(self):
-        # call_command('loaddata', 'sample_admin', verbosity=0)
-        pass
-
-    def tearDown(self):
-        pass
 
     def test_csw_base(self):
         """Verify that GeoNode works against any CSW"""
@@ -110,29 +112,23 @@ class GeoNodeCSWTest(TestCase):
             outputschema='http://www.opengis.net/cat/csw/2.0.2',
             esn='full')
 
-        record = csw.catalogue.records.values()[0]
+        record = list(csw.catalogue.records.values())[0]
 
         # test that the ISO title maps correctly in Dublin Core
-        self.assertEqual(record.title, 'San Andres Y Providencia Location',
-                         'Expected a specific title in Dublin Core model')
+        self.assertEqual(record.title, "San Andres Y Providencia Location")
 
         # test that the ISO abstract maps correctly in Dublin Core
-        self.assertEqual(record.abstract, 'No abstract provided',
-                         'Expected a specific abstract in Dublin Core model')
+        self.assertEqual(record.abstract, None)
 
         # test for correct service link articulation
         for link in record.references:
             if check_ogc_backend(geoserver.BACKEND_PACKAGE):
                 if link['scheme'] == 'OGC:WMS':
-                    self.assertEqual(
-                        link['url'],
-                        'http://localhost:8080/geoserver/geonode/ows',
-                        'Expected a specific OGC:WMS URL')
+                    self.assertEqual(link['url'], "{}ows".format(settings.GEOSERVER_PUBLIC_LOCATION))
                 elif link['scheme'] == 'OGC:WFS':
-                    self.assertEqual(
-                        link['url'],
-                        'http://localhost:8080/geoserver/geonode/wfs',
-                        'Expected a specific OGC:WFS URL')
+                    self.assertEqual(link['url'], "{}ows".format(settings.GEOSERVER_PUBLIC_LOCATION))
+                elif link['scheme'] == 'OGC:WCS':
+                    self.assertEqual(link['url'], "{}ows".format(settings.GEOSERVER_PUBLIC_LOCATION))
             elif check_ogc_backend(qgis_server.BACKEND_PACKAGE):
                 if link['scheme'] == 'OGC:WMS':
                     self.assertEqual(
@@ -159,38 +155,20 @@ class GeoNodeCSWTest(TestCase):
             outputschema='http://www.isotc211.org/2005/gmd',
             esn='full')
 
-        record = csw.catalogue.records.values()[0]
+        record = list(csw.catalogue.records.values())[0]
 
         # test that the ISO title maps correctly in Dublin Core
-        self.assertEqual(
-            record.identification.title,
-            'San Andres Y Providencia Location',
-            'Expected a specific title in ISO model')
+        self.assertEqual(record.identification.title, "San Andres Y Providencia Location")
 
         # test that the ISO abstract maps correctly in Dublin Core
-        self.assertEqual(
-            record.identification.abstract,
-            'No abstract provided',
-            'Expected a specific abstract in ISO model')
+        self.assertEqual(record.identification.abstract, None)
 
         # test BBOX properties in Dublin Core
         from decimal import Decimal
-        self.assertEqual(
-            Decimal(record.identification.bbox.minx),
-            Decimal('-81.8593555'),
-            'Expected a specific minx coordinate value in ISO model')
-        self.assertEqual(
-            Decimal(record.identification.bbox.miny),
-            Decimal('12.1665322'),
-            'Expected a specific minx coordinate value in ISO model')
-        self.assertEqual(
-            Decimal(record.identification.bbox.maxx),
-            Decimal('-81.356409'),
-            'Expected a specific maxx coordinate value in ISO model')
-        self.assertEqual(
-            Decimal(record.identification.bbox.maxy),
-            Decimal('13.396306'),
-            'Expected a specific maxy coordinate value in ISO model')
+        self.assertEqual(Decimal(record.identification.bbox.minx), Decimal('-81.8593555'))
+        self.assertEqual(Decimal(record.identification.bbox.miny), Decimal('12.1665322'))
+        self.assertEqual(Decimal(record.identification.bbox.maxx), Decimal('-81.356409'))
+        self.assertEqual(Decimal(record.identification.bbox.maxy), Decimal('13.396306'))
 
         # test for correct link articulation
         for link in record.distribution.online:
@@ -198,12 +176,12 @@ class GeoNodeCSWTest(TestCase):
                 if link.protocol == 'OGC:WMS':
                     self.assertEqual(
                         link.url,
-                        'http://localhost:8080/geoserver/geonode/ows',
+                        '{}ows'.format(settings.GEOSERVER_PUBLIC_LOCATION),
                         'Expected a specific OGC:WMS URL')
                 elif link.protocol == 'OGC:WFS':
                     self.assertEqual(
                         link.url,
-                        'http://localhost:8080/geoserver/geonode/wfs',
+                        '{}wfs'.format(settings.GEOSERVER_PUBLIC_LOCATION),
                         'Expected a specific OGC:WFS URL')
             if check_ogc_backend(qgis_server.BACKEND_PACKAGE):
                 if link.protocol == 'OGC:WMS':
@@ -236,31 +214,18 @@ class GeoNodeCSWTest(TestCase):
                 outputschema='http://www.opengis.net/cat/csw/2.0.2',
                 esn='full')
 
-            record = csw.catalogue.records.values()[0]
+            record = list(csw.catalogue.records.values())[0]
 
             # test CRS constructs in Dublin Core
-            self.assertEqual(
-                record.bbox.crs.code,
-                4326,
-                'Expected a specific CRS code value in Dublin Core model')
+            self.assertEqual(record.bbox.crs.code, 4326)
             # test BBOX properties in Dublin Core
             from decimal import Decimal
-            self.assertEqual(
-                Decimal(record.bbox.minx),
-                Decimal('-81.8593555'),
-                'Expected a specific minx coordinate value in Dublin Core model')
-            self.assertEqual(
-                Decimal(record.bbox.miny),
-                Decimal('12.1665322'),
-                'Expected a specific minx coordinate value in Dublin Core model')
-            self.assertEqual(
-                Decimal(record.bbox.maxx),
-                Decimal('-81.356409'),
-                'Expected a specific maxx coordinate value in Dublin Core model')
-            self.assertEqual(
-                Decimal(record.bbox.maxy),
-                Decimal('13.396306'),
-                'Expected a specific maxy coordinate value in Dublin Core model')
+            logger.debug([Decimal(record.bbox.minx), Decimal(record.bbox.miny),
+                          Decimal(record.bbox.maxx), Decimal(record.bbox.maxy)])
+            self.assertEqual(Decimal(record.bbox.minx), Decimal('-81.859356'))
+            self.assertEqual(Decimal(record.bbox.miny), Decimal('12.166532'))
+            self.assertEqual(Decimal(record.bbox.maxx), Decimal('-81.356409'))
+            self.assertEqual(Decimal(record.bbox.maxy), Decimal('13.396306'))
 
     def test_csw_outputschema_fgdc(self):
         """Verify that GeoNode CSW can handle ISO metadata with FGDC outputSchema"""
@@ -276,29 +241,21 @@ class GeoNodeCSWTest(TestCase):
                 keywords=['san_andres_y_providencia_location'],
                 outputschema='http://www.opengis.net/cat/csw/csdgm')
 
-            record = csw.catalogue.records.values()[0]
+            record = list(csw.catalogue.records.values())[0]
 
             # test that the ISO title maps correctly in FGDC
-            self.assertEqual(
-                record.idinfo.citation.citeinfo['title'],
-                'San Andres Y Providencia Location',
-                'Expected a specific title in FGDC model')
+            self.assertEqual(record.idinfo.citation.citeinfo['title'], "San Andres Y Providencia Location")
 
             # test that the ISO abstract maps correctly in FGDC
-            self.assertEqual(
-                record.idinfo.descript.abstract,
-                'No abstract provided',
-                'Expected a specific abstract in FGDC model')
+            self.assertEqual(record.idinfo.descript.abstract, None)
 
     def test_csw_query_bbox(self):
         """Verify that GeoNode CSW can handle bbox queries"""
 
         csw = get_catalogue()
         csw.catalogue.getrecords(bbox=[-140, -70, 80, 70])
-        self.assertEqual(
-            csw.catalogue.results,
-            {'matches': 7, 'nextrecord': 0, 'returned': 7},
-            'Expected a specific bbox query result set')
+        logger.debug(csw.catalogue.results)
+        self.assertEqual(csw.catalogue.results, {'matches': 7, 'nextrecord': 0, 'returned': 7})
 
     def test_csw_upload_fgdc(self):
         """Verify that GeoNode CSW can handle FGDC metadata upload"""
@@ -310,7 +267,7 @@ class GeoNodeCSWTest(TestCase):
         if csw.catalogue.type == 'pycsw_http':
             # upload a native FGDC metadata document
             md_doc = etree.tostring(
-                etree.fromstring(
+                dlxml.fromstring(
                     open(
                         os.path.join(
                             gisdata.GOOD_METADATA,
@@ -323,84 +280,48 @@ class GeoNodeCSWTest(TestCase):
                 record=md_doc)
 
             # test that FGDC document was successfully inserted
-            self.assertEqual(
-                csw.catalogue.results['inserted'],
-                1,
-                'Expected 1 inserted record in FGDC model')
+            self.assertEqual(csw.catalogue.results['inserted'], 1)
 
             # query against FGDC typename, output FGDC
             csw.catalogue.getrecords(typenames='fgdc:metadata')
-            self.assertEqual(
-                csw.catalogue.results['matches'],
-                1,
-                'Expected 1 record in FGDC model')
+            self.assertEqual(csw.catalogue.results['matches'], 1)
 
-            record = csw.catalogue.records.values()[0]
+            record = list(csw.catalogue.records.values())[0]
 
             # test that the FGDC title maps correctly in DC
-            self.assertEqual(
-                record.title,
-                'Census_Blockgroup_Pop_Housing',
-                'Expected a specific title in DC model')
+            self.assertEqual(record.title, "Census_Blockgroup_Pop_Housing")
 
             # test that the FGDC type maps correctly in DC
-            self.assertEqual(
-                record.type,
-                'vector digital data',
-                'Expected a specific type in DC model')
+            self.assertEqual(record.type, "vector digital data")
 
             # test CRS constructs in Dublin Core
-            self.assertEqual(
-                record.bbox.crs.code,
-                4326,
-                'Expected a specific CRS code value in Dublin Core model')
+            self.assertEqual(record.bbox.crs.code, 4326)
 
             # test BBOX properties in Dublin Core
             from decimal import Decimal
-            self.assertEqual(
-                Decimal(record.bbox.minx),
-                Decimal('-117.6'),
-                'Expected a specific minx coordinate value in Dublin Core model')
-            self.assertEqual(
-                Decimal(record.bbox.miny),
-                Decimal('32.53'),
-                'Expected a specific minx coordinate value in Dublin Core model')
-            self.assertEqual(
-                Decimal(record.bbox.maxx),
-                Decimal('-116.08'),
-                'Expected a specific maxx coordinate value in Dublin Core model')
-            self.assertEqual(
-                Decimal(record.bbox.maxy),
-                Decimal('33.51'),
-                'Expected a specific maxy coordinate value in Dublin Core model')
+            self.assertEqual(Decimal(record.bbox.minx), Decimal('-117.6'))
+            self.assertEqual(Decimal(record.bbox.miny), Decimal('32.53'))
+            self.assertEqual(Decimal(record.bbox.maxx), Decimal('-116.08'))
+            self.assertEqual(Decimal(record.bbox.maxy), Decimal('33.51'))
 
             # query against FGDC typename, return in ISO
             csw.catalogue.getrecords(
                 typenames='fgdc:metadata',
                 esn='brief',
                 outputschema='http://www.isotc211.org/2005/gmd')
-            self.assertEqual(
-                csw.catalogue.results['matches'],
-                1,
-                'Expected 1 record in ISO model')
+            self.assertEqual(csw.catalogue.results['matches'], 1)
 
-            record = csw.catalogue.records.values()[0]
+            record = list(csw.catalogue.records.values())[0]
 
             # test that the FGDC title maps correctly in ISO
-            self.assertEqual(
-                record.identification.title,
-                'Census_Blockgroup_Pop_Housing',
-                'Expected a specific title in ISO model')
+            self.assertEqual(record.identification.title, "Census_Blockgroup_Pop_Housing")
 
             # cleanup and delete inserted FGDC metadata document
             csw.catalogue.transaction(
                 ttype='delete',
                 typename='fgdc:metadata',
                 cql='fgdc:Title like "Census_Blockgroup_Pop_Housing"')
-            self.assertEqual(
-                csw.catalogue.results['deleted'],
-                1,
-                'Expected 1 deleted record in FGDC model')
+            self.assertEqual(csw.catalogue.results['deleted'], 1)
 
     def test_csw_bulk_upload(self):
         """Verify that GeoNode CSW can handle bulk upload of ISO and FGDC metadata"""
@@ -418,7 +339,7 @@ class GeoNodeCSWTest(TestCase):
                 for mfile in files:
                     if mfile.endswith('.xml'):
                         md_doc = etree.tostring(
-                            etree.fromstring(
+                            dlxml.fromstring(
                                 open(
                                     os.path.join(
                                         root,
@@ -431,7 +352,7 @@ class GeoNodeCSWTest(TestCase):
                             csw.catalogue.results['insertresults'][0])
 
             for md in glob.glob(os.path.join(gisdata.GOOD_METADATA, 'wustl.edu', '*.xml')):
-                md_doc = etree.tostring(etree.fromstring(open(md).read()))
+                md_doc = etree.tostring(dlxml.fromstring(open(md).read()))
                 csw.catalogue.transaction(
                     ttype='insert',
                     typename='gmd:MD_Metadata',

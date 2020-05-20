@@ -19,10 +19,12 @@
 #########################################################################
 
 import logging
-from urllib import urlencode, urlretrieve
+import traceback
+from urllib.parse import urlencode
+from urllib.request import urlretrieve
 from os.path import splitext
 from math import atan, degrees, sinh, pi
-from lxml import etree
+from defusedxml import lxml as dlxml
 
 from django.conf import settings as geonode_config
 
@@ -45,7 +47,7 @@ def set_attributes(layer, overwrite=False):
     :type overwrite: bool
     """
     if layer.storeType in ['dataStore']:
-        layer_name = layer.alternate.encode('utf-8')
+        layer_name = layer.alternate
         qgis_layer = QGISServerLayer.objects.get(layer=layer)
 
         qgis_server = geonode_config.QGIS_SERVER_CONFIG['qgis_server_url']
@@ -62,7 +64,7 @@ def set_attributes(layer, overwrite=False):
         try:
             temp_file = urlretrieve(dft_url)[0]
             with open(temp_file, 'r') as wfs_file:
-                doc = etree.fromstring(wfs_file.read())
+                doc = dlxml.fromstring(wfs_file.read())
 
             path = './/{xsd}extension/{xsd}sequence/{xsd}element'.format(
                 xsd='{http://www.w3.org/2001/XMLSchema}')
@@ -71,7 +73,9 @@ def set_attributes(layer, overwrite=False):
                 [n.attrib['name'], n.attrib['type']] for n in doc.findall(
                     path) if n.attrib.get('name') and n.attrib.get('type')]
 
-        except:
+        except Exception:
+            tb = traceback.format_exc()
+            logger.debug(tb)
             attribute_map = []
     else:
         attribute_map = []
@@ -105,7 +109,7 @@ def set_attributes(layer, overwrite=False):
             logger.debug(
                 'Going to delete [%s] for [%s]',
                 la.attribute,
-                layer.name.encode('utf-8'))
+                layer.name)
             la.delete()
 
     # Add new layer attributes if they don't already exist.
@@ -126,7 +130,7 @@ def set_attributes(layer, overwrite=False):
                     logger.debug(
                         'Created [%s] attribute for [%s]',
                         field,
-                        layer.name.encode('utf-8'))
+                        layer.name)
     else:
         logger.debug('No attributes found')
 

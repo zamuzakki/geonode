@@ -17,7 +17,7 @@
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 #########################################################################
-
+from django.db.models import Q
 from tastypie.authentication import ApiKeyAuthentication
 from tastypie.authorization import DjangoAuthorization
 from tastypie.exceptions import Unauthorized
@@ -26,19 +26,24 @@ from tastypie.compat import get_user_model, get_username_field
 from guardian.shortcuts import get_objects_for_user
 from tastypie.http import HttpUnauthorized
 
+from django.conf import settings
+
 from geonode import geoserver, qgis_server
 from geonode.utils import check_ogc_backend
 
 
 class GeoNodeAuthorization(DjangoAuthorization):
-
     """Object level API authorization based on GeoNode granular
     permission system"""
 
     def read_list(self, object_list, bundle):
-        permitted_ids = get_objects_for_user(
-            bundle.request.user,
-            'base.view_resourcebase').values('id')
+        permitted_ids = []
+        try:
+            permitted_ids = get_objects_for_user(
+                bundle.request.user,
+                'base.view_resourcebase').values('id')
+        except Exception:
+            pass
 
         return object_list.filter(id__in=permitted_ids)
 
@@ -146,3 +151,42 @@ class GeoNodeStyleAuthorization(GeoNodeAuthorization):
 
         resource_obj = bundle.obj.get_self_resource()
         return resource_obj in permitted_ids
+
+
+class ApiLockdownAuthorization(DjangoAuthorization):
+    """API authorization for all resources which are not protected  by others authentication/authorization mechanism.
+    If setting "API_LOCKDOWN" is set to True, resource can only be accessed by authenticated users. For anonymous
+    requests, empty lists are returned.
+    """
+
+    def read_list(self, object_list, bundle):
+        user = bundle.request.user
+        if settings.API_LOCKDOWN and not user.is_authenticated:
+            # return empty list
+            return []
+        else:
+            return object_list
+
+
+class GroupAuthorization(ApiLockdownAuthorization):
+
+    def read_list(self, object_list, bundle):
+        groups = super(GroupAuthorization, self).read_list(object_list, bundle)
+        user = bundle.request.user
+        if groups and (not user.is_authenticated or user.is_anonymous):
+            return groups.exclude(groupprofile__access='private')
+        elif groups and not user.is_superuser:
+            return groups.filter(Q(groupprofile__in=user.group_list_all()) | ~Q(groupprofile__access='private'))
+        return groups
+
+
+class GroupProfileAuthorization(ApiLockdownAuthorization):
+
+    def read_list(self, object_list, bundle):
+        groups = super(GroupProfileAuthorization, self).read_list(object_list, bundle)
+        user = bundle.request.user
+        if groups and (not user.is_authenticated or user.is_anonymous):
+            return groups.exclude(access='private')
+        elif groups and not user.is_superuser:
+            return groups.filter(Q(pk__in=user.group_list_all()) | ~Q(access='private'))
+        return groups

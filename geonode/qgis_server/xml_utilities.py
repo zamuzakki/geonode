@@ -105,7 +105,7 @@ def insert_xml_element(root, element_path):
             # if a parent is missing insert it at the right place
             try:
                 element = ElementTree.SubElement(parent, tag)
-            except:
+            except Exception:
                 # In some cases we can't add parent because the tag name is
                 # not specific
                 pass
@@ -125,7 +125,7 @@ def update_xml(xml_file, new_values):
     exml = etree.parse(xml_file)
     root = exml.getroot()
 
-    for name, path in properties.iteritems():
+    for name, path in properties.items():
         if name in new_values:
             elem = root.find(path, XML_NS)
             if elem is None:

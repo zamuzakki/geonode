@@ -29,8 +29,11 @@ from django.db import models
 from django.utils.translation import ugettext_lazy as _
 from geonode.security.models import PermissionLevelMixin
 from lxml import etree
+from defusedxml import lxml as dlxml
+from six import string_types
 
 from geonode import qgis_server
+from geonode.compat import ensure_string
 from geonode.layers.models import Layer
 from geonode.maps.models import Map
 from geonode.utils import check_ogc_backend
@@ -59,23 +62,24 @@ class QGISServerLayer(models.Model, PermissionLevelMixin):
     layer = models.OneToOneField(
         Layer,
         primary_key=True,
-        related_name='qgis_layer'
+        related_name='qgis_layer',
+        on_delete=models.CASCADE
     )
     base_layer_path = models.CharField(
         name='base_layer_path',
         verbose_name='Base Layer Path',
         help_text='Location of the base layer.',
-        max_length=100
+        max_length=2000
     )
 
     default_style = models.ForeignKey(
-        'QGISServerStyle',
+        'qgis_server.QGISServerStyle',
         related_name='layer_default_style',
         default=None,
         null=True,
         on_delete=models.SET_NULL)
     styles = models.ManyToManyField(
-        'QGISServerStyle',
+        'qgis_server.QGISServerStyle',
         related_name='layer_styles')
 
     @property
@@ -182,8 +186,11 @@ class QGISServerLayer(models.Model, PermissionLevelMixin):
         # Associate this model with resource
         try:
             return self.layer.get_self_resource()
-        except:
+        except Exception:
             return None
+
+    class Meta:
+        app_label = "qgis_server"
 
 
 class QGISServerStyle(models.Model, PermissionLevelMixin):
@@ -217,11 +224,11 @@ class QGISServerStyle(models.Model, PermissionLevelMixin):
         :rtype: QGISServerStyle, bool
         """
 
-        if isinstance(style_xml, str):
-            style_xml = etree.fromstring(style_xml)
+        if isinstance(style_xml, string_types):
+            style_xml = dlxml.fromstring(style_xml)
 
         elif isinstance(style_xml, ElementTree.Element):
-            style_xml = etree.fromstring(
+            style_xml = dlxml.fromstring(
                 ElementTree.tostring(
                     style_xml, encoding='utf-8', method='xml'))
 
@@ -245,7 +252,7 @@ class QGISServerStyle(models.Model, PermissionLevelMixin):
 
         response = requests.get(style_url)
         style_body = etree.tostring(
-            etree.fromstring(response.content), pretty_print=True)
+            dlxml.fromstring(ensure_string(response.content)), pretty_print=True)
 
         default_dict = {
             'title': style_xml.xpath(
@@ -312,8 +319,11 @@ class QGISServerStyle(models.Model, PermissionLevelMixin):
             qgis_layer = self.layer_styles.first()
             """:type: QGISServerLayer"""
             return qgis_layer.get_self_resource()
-        except:
+        except Exception:
             return None
+
+    class Meta:
+        app_label = "qgis_server"
 
 
 class QGISServerMap(models.Model, PermissionLevelMixin):
@@ -322,7 +332,8 @@ class QGISServerMap(models.Model, PermissionLevelMixin):
     map = models.OneToOneField(
         Map,
         primary_key=True,
-        name='map'
+        name='map',
+        on_delete=models.CASCADE
     )
 
     map_name_format = 'map_{id}'
@@ -371,10 +382,8 @@ class QGISServerMap(models.Model, PermissionLevelMixin):
         # Associate this model with resource
         try:
             return self.layer.get_self_resource()
-        except:
+        except Exception:
             return None
 
-
-from geonode.qgis_server.signals import \
-    register_qgis_server_signals  # noqa: F402,F401
-register_qgis_server_signals()
+    class Meta:
+        app_label = "qgis_server"

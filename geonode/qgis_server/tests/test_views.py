@@ -18,34 +18,34 @@
 #
 #########################################################################
 
-import StringIO
+from geonode.tests.base import GeoNodeBaseTestSupport
+
+import io
 import json
 import os
-import urlparse
+from urllib.parse import urlsplit, urlunsplit
 import zipfile
 from imghdr import what
 
 import requests
-from lxml import etree
+from defusedxml import lxml as dlxml
 
 import gisdata
 from django.conf import settings
 from django.contrib.staticfiles.templatetags import staticfiles
-from django.core.management import call_command
-from django.core.urlresolvers import reverse
-from django.test import LiveServerTestCase, TestCase
+from django.urls import reverse
 
 from geonode import qgis_server
+from geonode.compat import ensure_string
 from geonode.decorators import on_ogc_backend
 from geonode.layers.utils import file_upload
 from geonode.maps.models import Map
 from geonode.qgis_server.helpers import wms_get_capabilities_url, style_list
 
 
-class DefaultViewsTest(TestCase):
+class DefaultViewsTest(GeoNodeBaseTestSupport):
 
-    def setUp(self):
-        call_command('loaddata', 'people_data', verbosity=0)
+    fixtures = ['initial_data.json', 'people_data.json']
 
     @on_ogc_backend(qgis_server.BACKEND_PACKAGE)
     def test_default_context(self):
@@ -61,15 +61,13 @@ class DefaultViewsTest(TestCase):
         self.assertIn('MAPFISH_PRINT_ENABLED', context)
         self.assertIn('PRINT_NG_ENABLED', context)
         self.assertIn('GEONODE_SECURITY_ENABLED', context)
-        self.assertIn('GEOGIG_ENABLED', context)
         self.assertIn('TIME_ENABLED', context)
         self.assertIn('MOSAIC_ENABLED', context)
 
 
-class QGISServerViewsTest(LiveServerTestCase):
+class QGISServerViewsTest(GeoNodeBaseTestSupport):
 
-    def setUp(self):
-        call_command('loaddata', 'people_data', verbosity=0)
+    fixtures = ['initial_data.json', 'people_data.json']
 
     @on_ogc_backend(qgis_server.BACKEND_PACKAGE)
     def test_ogc_specific_layer(self):
@@ -93,7 +91,7 @@ class QGISServerViewsTest(LiveServerTestCase):
             reverse('qgis_server:download-zip', kwargs=params))
         self.assertEqual(response.status_code, 200)
         try:
-            f = StringIO.StringIO(response.content)
+            f = io.StringIO(ensure_string(response.content))
             zipped_file = zipfile.ZipFile(f, 'r')
 
             for one_file in zipped_file.namelist():
@@ -109,7 +107,7 @@ class QGISServerViewsTest(LiveServerTestCase):
             reverse('qgis_server:legend', kwargs=params))
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get('Content-Type'), 'image/png')
-        self.assertEqual(what('', h=response.content), 'png')
+        self.assertEqual(what('', h=ensure_string(response.content)), 'png')
 
         # Tile
         coordinates = {'z': '11', 'x': '1576', 'y': '1054'}
@@ -118,7 +116,7 @@ class QGISServerViewsTest(LiveServerTestCase):
             reverse('qgis_server:tile', kwargs=coordinates))
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get('Content-Type'), 'image/png')
-        self.assertEqual(what('', h=response.content), 'png')
+        self.assertEqual(what('', h=ensure_string(response.content)), 'png')
 
         # Tile 404
         response = self.client.get(
@@ -132,7 +130,7 @@ class QGISServerViewsTest(LiveServerTestCase):
             reverse('qgis_server:geotiff', kwargs=params))
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get('Content-Type'), 'image/tiff')
-        self.assertEqual(what('', h=response.content), 'tiff')
+        self.assertEqual(what('', h=ensure_string(response.content)), 'tiff')
 
         # Layer is already on the database
         # checking the Link
@@ -182,7 +180,10 @@ class QGISServerViewsTest(LiveServerTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get('Content-Type'), 'application/json')
         # Should return a default style list
-        actual_result = json.loads(response.content)
+        content = ensure_string(response.content)
+        if isinstance(content, bytes):
+            content = content.decode('UTF-8')
+        actual_result = json.loads(content)
         actual_result = [s['name'] for s in actual_result]
         expected_result = ['default']
         self.assertEqual(set(expected_result), set(actual_result))
@@ -214,7 +215,10 @@ class QGISServerViewsTest(LiveServerTestCase):
             reverse('qgis_server:set-thumbnail', kwargs=params),
             data=data)
         self.assertEqual(response.status_code, 200)
-        retval = json.loads(response.content)
+        content = ensure_string(response.content)
+        if isinstance(content, bytes):
+            content = content.decode('UTF-8')
+        retval = json.loads(content)
         expected_retval = {
             'success': True
         }
@@ -232,7 +236,7 @@ class QGISServerViewsTest(LiveServerTestCase):
             reverse('qgis_server:layer-request', kwargs=params), query_string)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get('Content-Type'), 'image/png')
-        self.assertEqual(what('', h=response.content), 'png')
+        self.assertEqual(what('', h=ensure_string(response.content)), 'png')
 
         # OGC Server for the Geonode instance
         # GetLegendGraphics is a shortcut when using the main OGC server.
@@ -247,7 +251,7 @@ class QGISServerViewsTest(LiveServerTestCase):
             reverse('qgis_server:request'), query_string)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get('Content-Type'), 'image/png')
-        self.assertEqual(what('', h=response.content), 'png')
+        self.assertEqual(what('', h=ensure_string(response.content)), 'png')
 
         # WMS GetCapabilities
         query_string = {
@@ -258,19 +262,19 @@ class QGISServerViewsTest(LiveServerTestCase):
 
         response = self.client.get(
             reverse('qgis_server:request'), query_string)
-        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.status_code, 200, ensure_string(response.content))
         self.assertEqual(
-            response.content, 'GetCapabilities is not supported yet.')
+            ensure_string(response.content), 'GetCapabilities is not supported yet.')
 
         query_string['LAYERS'] = uploaded.name
 
         response = self.client.get(
             reverse('qgis_server:request'), query_string)
-        get_capabilities_content = response.content
+        get_capabilities_content = ensure_string(response.content)
 
         # Check xml content
-        self.assertEqual(response.status_code, 200, response.content)
-        root = etree.fromstring(response.content)
+        self.assertEqual(response.status_code, 200, ensure_string(response.content))
+        root = dlxml.fromstring(ensure_string(response.content))
         layer_xml = root.xpath(
             'wms:Capability/wms:Layer/wms:Layer/wms:Name',
             namespaces={'wms': 'http://www.opengis.net/wms'})
@@ -290,13 +294,13 @@ class QGISServerViewsTest(LiveServerTestCase):
         response = self.client.get(legend_url)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get('Content-Type'), 'image/png')
-        self.assertEqual(what('', h=response.content), 'png')
+        self.assertEqual(what('', h=ensure_string(response.content)), 'png')
 
         # Check get capabilities using helper returns the same thing
         response = requests.get(wms_get_capabilities_url(
             uploaded, internal=False))
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(get_capabilities_content, response.content)
+        self.assertEqual(get_capabilities_content, ensure_string(response.content))
 
         # WMS GetMap
         query_string = {
@@ -312,10 +316,10 @@ class QGISServerViewsTest(LiveServerTestCase):
         }
         response = self.client.get(
             reverse('qgis_server:request'), query_string)
-        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.status_code, 200, ensure_string(response.content))
         self.assertEqual(
-            response.get('Content-Type'), 'image/png', response.content)
-        self.assertEqual(what('', h=response.content), 'png')
+            response.get('Content-Type'), 'image/png', ensure_string(response.content))
+        self.assertEqual(what('', h=ensure_string(response.content)), 'png')
 
         # End of the test, we should remove every files related to the test.
         uploaded.delete()
@@ -345,8 +349,10 @@ class QGISServerViewsTest(LiveServerTestCase):
             content_type='application/json')
         # map is successfully saved
         self.assertEqual(response.status_code, 200)
-
-        map_id = json.loads(response.content).get('id')
+        content = ensure_string(response.content)
+        if isinstance(content, bytes):
+            content = content.decode('UTF-8')
+        map_id = json.loads(content).get('id')
 
         map = Map.objects.get(id=map_id)
 
@@ -419,10 +425,9 @@ class QGISServerViewsTest(LiveServerTestCase):
         layer2.delete()
 
 
-class QGISServerStyleManagerTest(LiveServerTestCase):
+class QGISServerStyleManagerTest(GeoNodeBaseTestSupport):
 
-    def setUp(self):
-        call_command('loaddata', 'people_data', verbosity=0)
+    fixtures = ['initial_data.json', 'people_data.json']
 
     def data_path(self, path):
         project_root = os.path.abspath(settings.PROJECT_ROOT)
@@ -452,7 +457,10 @@ class QGISServerStyleManagerTest(LiveServerTestCase):
                 })
             response = self.client.get(style_list_url)
             self.assertEqual(response.status_code, 200)
-            actual_list_style = json.loads(response.content)
+            content = ensure_string(response.content)
+            if isinstance(content, bytes):
+                content = content.decode('UTF-8')
+            actual_list_style = json.loads(content)
 
             # There will be a default style
             self.assertEqual(
@@ -524,18 +532,20 @@ class QGISServerStyleManagerTest(LiveServerTestCase):
         expected_default_style_retval = {
             'name': 'new_style',
         }
-        actual_default_style_retval = json.loads(response.content)
+        content = ensure_string(response.content)
+        if isinstance(content, bytes):
+            content = content.decode('UTF-8')
+        actual_default_style_retval = json.loads(content)
 
-        for key, value in expected_default_style_retval.iteritems():
+        for key, value in expected_default_style_retval.items():
             self.assertEqual(actual_default_style_retval[key], value)
 
         layer.delete()
 
 
-class ThumbnailGenerationTest(LiveServerTestCase):
+class ThumbnailGenerationTest(GeoNodeBaseTestSupport):
 
-    def setUp(self):
-        call_command('loaddata', 'people_data', verbosity=0)
+    fixtures = ['initial_data.json', 'people_data.json']
 
     @on_ogc_backend(qgis_server.BACKEND_PACKAGE)
     def test_thumbnail_links(self):
@@ -556,8 +566,8 @@ class ThumbnailGenerationTest(LiveServerTestCase):
         remote_thumbnail_url = remote_thumbnail_link.url
 
         # Replace url's basename, we want to access it using django client
-        parse_result = urlparse.urlsplit(remote_thumbnail_url)
-        remote_thumbnail_url = urlparse.urlunsplit(
+        parse_result = urlsplit(remote_thumbnail_url)
+        remote_thumbnail_url = urlunsplit(
             ('', '', parse_result.path, parse_result.query, ''))
 
         response = self.client.get(remote_thumbnail_url)
@@ -565,7 +575,7 @@ class ThumbnailGenerationTest(LiveServerTestCase):
         thumbnail_dir = os.path.join(settings.MEDIA_ROOT, 'thumbs')
         thumbnail_path = os.path.join(thumbnail_dir, 'layer-thumb.png')
 
-        layer.save_thumbnail(thumbnail_path, response.content)
+        layer.save_thumbnail(thumbnail_path, ensure_string(response.content))
 
         # Check thumbnail created
         self.assertTrue(os.path.exists(thumbnail_path))
@@ -612,8 +622,10 @@ class ThumbnailGenerationTest(LiveServerTestCase):
             content_type='application/json')
 
         self.assertEqual(response.status_code, 200)
-
-        map_id = json.loads(response.content).get('id')
+        content = ensure_string(response.content)
+        if isinstance(content, bytes):
+            content = content.decode('UTF-8')
+        map_id = json.loads(content).get('id')
 
         map = Map.objects.get(id=map_id)
 
@@ -628,8 +640,8 @@ class ThumbnailGenerationTest(LiveServerTestCase):
         remote_thumbnail_url = remote_thumbnail_link.url
 
         # Replace url's basename, we want to access it using django client
-        parse_result = urlparse.urlsplit(remote_thumbnail_url)
-        remote_thumbnail_url = urlparse.urlunsplit(
+        parse_result = urlsplit(remote_thumbnail_url)
+        remote_thumbnail_url = urlunsplit(
             ('', '', parse_result.path, parse_result.query, ''))
 
         response = self.client.get(remote_thumbnail_url)
@@ -637,7 +649,7 @@ class ThumbnailGenerationTest(LiveServerTestCase):
         thumbnail_dir = os.path.join(settings.MEDIA_ROOT, 'thumbs')
         thumbnail_path = os.path.join(thumbnail_dir, 'map-thumb.png')
 
-        map.save_thumbnail(thumbnail_path, response.content)
+        map.save_thumbnail(thumbnail_path, ensure_string(response.content))
 
         # Check thumbnail created
         self.assertTrue(os.path.exists(thumbnail_path))

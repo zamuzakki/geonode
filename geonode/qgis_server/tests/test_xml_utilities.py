@@ -18,7 +18,8 @@
 #
 #########################################################################
 
-from unittest import TestCase
+from geonode.tests.base import GeoNodeBaseTestSupport
+
 from xml.etree import ElementTree
 import os
 import shutil
@@ -29,7 +30,9 @@ from geonode.qgis_server.xml_utilities import (
     insert_xml_element, update_xml)
 
 
-class XMLUtilitiesTest(TestCase):
+class XMLUtilitiesTest(GeoNodeBaseTestSupport):
+
+    fixtures = ['initial_data.json', 'people_data.json']
 
     """Test for xml utilities module."""
 
@@ -47,7 +50,7 @@ class XMLUtilitiesTest(TestCase):
         element.text = 'TESTtext'
         result_xml = ElementTree.tostring(root)
 
-        self.assertEquals(expected_xml, result_xml)
+        self.assertEqual(expected_xml, result_xml)
 
     @on_ogc_backend(qgis_server.BACKEND_PACKAGE)
     def test_update_xml(self):

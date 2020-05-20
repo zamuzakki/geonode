@@ -19,7 +19,6 @@
 #########################################################################
 
 from django.core.management.base import BaseCommand
-from optparse import make_option
 from geonode.people.utils import get_valid_user
 from geonode.geoserver.helpers import gs_slurp
 import traceback
@@ -29,62 +28,64 @@ import ast
 
 class Command(BaseCommand):
     help = 'Update the GeoNode application with data from GeoServer'
-    option_list = BaseCommand.option_list + (
-        make_option(
+
+    def add_arguments(self, parser):
+        parser.add_argument(
             '-i',
             '--ignore-errors',
             action='store_true',
             dest='ignore_errors',
             default=False,
-            help='Stop after any errors are encountered.'),
-        make_option(
+            help='Stop after any errors are encountered.'
+        )
+        parser.add_argument(
             '--skip-unadvertised',
             action='store_true',
             dest='skip_unadvertised',
             default=False,
             help='Skip processing unadvertised layers from GeoSever.'),
-        make_option(
+        parser.add_argument(
             '--skip-geonode-registered',
             action='store_true',
             dest='skip_geonode_registered',
             default=False,
             help='Just processing GeoServer layers still not registered in GeoNode.'),
-        make_option(
+        parser.add_argument(
             '--remove-deleted',
             action='store_true',
             dest='remove_deleted',
             default=False,
             help='Remove GeoNode layers that have been deleted from GeoSever.'),
-        make_option(
+        parser.add_argument(
             '-u',
             '--user',
             dest="user",
             default=None,
             help="Name of the user account which should own the imported layers"),
-        make_option(
+        parser.add_argument(
             '-f',
             '--filter',
             dest="filter",
             default=None,
             help="Only update data the layers that match the given filter"),
-        make_option(
+        parser.add_argument(
             '-s',
             '--store',
             dest="store",
             default=None,
             help="Only update data the layers for the given geoserver store name"),
-        make_option(
+        parser.add_argument(
             '-w',
             '--workspace',
             dest="workspace",
             default=None,
             help="Only update data on specified workspace"),
-        make_option(
+        parser.add_argument(
             '-p',
             '--permissions',
             dest="permissions",
             default=None,
-            help="Permissions to apply to each layer"))
+            help="Permissions to apply to each layer")
 
     def handle(self, **options):
         ignore_errors = options.get('ignore_errors')
@@ -122,34 +123,34 @@ class Command(BaseCommand):
             execute_signals=True)
 
         if verbosity > 1:
-            print "\nDetailed report of failures:"
+            print("\nDetailed report of failures:")
             for dict_ in output['layers']:
                 if dict_['status'] == 'failed':
-                    print "\n\n", dict_['name'], "\n================"
+                    print("\n\n", dict_['name'], "\n================")
                     traceback.print_exception(dict_['exception_type'],
                                               dict_['error'],
                                               dict_['traceback'])
             if remove_deleted:
-                print "Detailed report of layers to be deleted from GeoNode that failed:"
+                print("Detailed report of layers to be deleted from GeoNode that failed:")
                 for dict_ in output['deleted_layers']:
                     if dict_['status'] == 'delete_failed':
-                        print "\n\n", dict_['name'], "\n================"
+                        print("\n\n", dict_['name'], "\n================")
                         traceback.print_exception(dict_['exception_type'],
                                                   dict_['error'],
                                                   dict_['traceback'])
 
         if verbosity > 0:
-            print "\n\nFinished processing %d layers in %s seconds.\n" % (
-                len(output['layers']), round(output['stats']['duration_sec'], 2))
-            print "%d Created layers" % output['stats']['created']
-            print "%d Updated layers" % output['stats']['updated']
-            print "%d Failed layers" % output['stats']['failed']
+            print("\n\nFinished processing {} layers in {} seconds.\n".format(
+                len(output['layers']), round(output['stats']['duration_sec'], 2)))
+            print("{} Created layers".format(output['stats']['created']))
+            print("{} Updated layers".format(output['stats']['updated']))
+            print("{} Failed layers".format(output['stats']['failed']))
             try:
                 duration_layer = round(
                     output['stats']['duration_sec'] * 1.0 / len(output['layers']), 2)
             except ZeroDivisionError:
                 duration_layer = 0
             if len(output) > 0:
-                print "%f seconds per layer" % duration_layer
+                print("{} seconds per layer".format(duration_layer))
             if remove_deleted:
-                print "\n%d Deleted layers" % output['stats']['deleted']
+                print("\n{} Deleted layers".format(output['stats']['deleted']))

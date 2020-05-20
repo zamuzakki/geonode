@@ -20,7 +20,7 @@
 import json
 import re
 
-from django.core.urlresolvers import resolve
+from django.urls import resolve
 from django.db.models import Q
 from django.http import HttpResponse
 from django.conf import settings
@@ -51,17 +51,20 @@ from geonode.maps.models import Map
 from geonode.documents.models import Document
 from geonode.base.models import ResourceBase
 from geonode.base.models import HierarchicalKeyword
-from geonode.people.models import Profile
 from geonode.groups.models import GroupProfile
 from geonode.utils import check_ogc_backend
 from geonode.security.utils import get_visible_resources
-
+from .authentication import OAuthAuthentication
 from .authorization import GeoNodeAuthorization, GeonodeApiKeyAuthentication
 
-from .api import TagResource, RegionResource, OwnersResource
-from .api import ThesaurusKeywordResource
-from .api import TopicCategoryResource, GroupResource
-from .api import FILTER_TYPES
+from .api import (TagResource,
+                  RegionResource,
+                  OwnersResource,
+                  ThesaurusKeywordResource,
+                  TopicCategoryResource,
+                  GroupResource,
+                  FILTER_TYPES)
+from .paginator import CrossSiteXHRPaginator
 
 if settings.HAYSTACK_SEARCH:
     from haystack.query import SearchQuerySet  # noqa
@@ -86,6 +89,8 @@ class CommonMetaApi:
                  'group': ALL_WITH_RELATIONS,
                  'owner': ALL_WITH_RELATIONS,
                  'date': ALL,
+                 'purpose': ALL,
+                 'abstract': ALL
                  }
     ordering = ['date', 'title', 'popular_count']
     max_limit = None
@@ -138,6 +143,7 @@ class CommonModelApi(ModelResource):
         'bbox_y1',
         'category__gn_description',
         'supplemental_information',
+        'site_url',
         'thumbnail_url',
         'detail_url',
         'rating',
@@ -145,6 +151,7 @@ class CommonModelApi(ModelResource):
         'has_time',
         'is_approved',
         'is_published',
+        'dirty_state',
     ]
 
     def build_filters(self, filters=None, ignore_bad_filters=False, **kwargs):
@@ -152,27 +159,37 @@ class CommonModelApi(ModelResource):
             filters = {}
         orm_filters = super(CommonModelApi, self).build_filters(
             filters=filters, ignore_bad_filters=ignore_bad_filters, **kwargs)
-        if 'type__in' in filters and filters[
-                'type__in'] in FILTER_TYPES.keys():
+        if 'type__in' in filters and filters['type__in'] in FILTER_TYPES.keys():
             orm_filters.update({'type': filters.getlist('type__in')})
         if 'extent' in filters:
             orm_filters.update({'extent': filters['extent']})
-        # Nothing returned if +'s are used instead of spaces for text search,
-        # so swap them out. Must be a better way of doing this?
-        for filter in orm_filters:
-            if filter in ['title__contains', 'q']:
-                orm_filters[filter] = orm_filters[filter].replace("+", " ")
+        orm_filters['f_method'] = filters['f_method'] if 'f_method' in filters else 'and'
+        if not settings.SEARCH_RESOURCES_EXTENDED:
+            return self._remove_additional_filters(orm_filters)
+        return orm_filters
+
+    def _remove_additional_filters(self, orm_filters):
+        orm_filters.pop('abstract__icontains', None)
+        orm_filters.pop('purpose__icontains', None)
+        orm_filters.pop('f_method', None)
         return orm_filters
 
     def apply_filters(self, request, applicable_filters):
         types = applicable_filters.pop('type', None)
         extent = applicable_filters.pop('extent', None)
         keywords = applicable_filters.pop('keywords__slug__in', None)
-        semi_filtered = super(
-            CommonModelApi,
-            self).apply_filters(
-            request,
-            applicable_filters)
+        filtering_method = applicable_filters.pop('f_method', 'and')
+        if filtering_method == 'or':
+            filters = Q()
+            for f in applicable_filters.items():
+                filters |= Q(f)
+            semi_filtered = self.get_object_list(request).filter(filters)
+        else:
+            semi_filtered = super(
+                CommonModelApi,
+                self).apply_filters(
+                request,
+                applicable_filters)
         filtered = None
         if types:
             for the_type in types:
@@ -195,12 +212,11 @@ class CommonModelApi(ModelResource):
                             filtered = semi_filtered.filter(
                                 Layer___storeType=LAYER_SUBTYPES[super_type])
                 else:
+                    _type_filter = FILTER_TYPES[the_type].__name__.lower()
                     if filtered:
-                        filtered = filtered | semi_filtered.instance_of(
-                            FILTER_TYPES[the_type])
+                        filtered = filtered | semi_filtered.filter(polymorphic_ctype__model=_type_filter)
                     else:
-                        filtered = semi_filtered.instance_of(
-                            FILTER_TYPES[the_type])
+                        filtered = semi_filtered.filter(polymorphic_ctype__model=_type_filter)
         else:
             filtered = semi_filtered
 
@@ -215,6 +231,15 @@ class CommonModelApi(ModelResource):
 
         if keywords:
             filtered = self.filter_h_keywords(filtered, keywords)
+
+        # Hide Dirty State Resources
+        user = request.user if request else None
+        if not user or not user.is_superuser:
+            if user:
+                filtered = filtered.exclude(Q(dirty_state=True) & ~(
+                    Q(owner__username__iexact=str(user))))
+            else:
+                filtered = filtered.exclude(Q(dirty_state=True))
 
         return filtered
 
@@ -250,20 +275,22 @@ class CommonModelApi(ModelResource):
         filtered = queryset.filter(Q(keywords__in=treeqs))
         return filtered
 
-    def filter_bbox(self, queryset, bbox):
-        """
-        modify the queryset q to limit to data that intersects with the
-        provided bbox
+    def filter_bbox(self, queryset, extent_filter):
+        from geonode.utils import bbox_to_projection
+        bbox = extent_filter.split(',')
+        bbox = list(map(str, bbox))
 
-        bbox - 4 tuple of floats representing 'southwest_lng,southwest_lat,
-        northeast_lng,northeast_lat'
-        returns the modified query
-        """
-        bbox = bbox.split(
-            ',')  # TODO: Why is this different when done through haystack?
-        bbox = map(str, bbox)  # 2.6 compat - float to decimal conversion
-        intersects = ~(Q(bbox_x0__gt=bbox[2]) | Q(bbox_x1__lt=bbox[0]) |
-                       Q(bbox_y0__gt=bbox[3]) | Q(bbox_y1__lt=bbox[1]))
+        intersects = (Q(bbox_x0__gte=bbox[0]) & Q(bbox_x1__lte=bbox[2]) &
+                      Q(bbox_y0__gte=bbox[1]) & Q(bbox_y1__lte=bbox[3]))
+
+        for proj in Layer.objects.order_by('srid').values('srid').distinct():
+            if proj['srid'] != 'EPSG:4326':
+                proj_bbox = bbox_to_projection(bbox + ['4326', ],
+                                               target_srid=int(proj['srid'][5:]))
+
+                if proj_bbox[-1] != 4326:
+                    intersects = intersects | (Q(bbox_x0__gte=proj_bbox[0]) & Q(bbox_x1__lte=proj_bbox[2]) & Q(
+                        bbox_y0__gte=proj_bbox[1]) & Q(bbox_y1__lte=proj_bbox[3]))
 
         return queryset.filter(intersects)
 
@@ -320,6 +347,9 @@ class CommonModelApi(ModelResource):
                 elif type in LAYER_SUBTYPES.keys():
                     subtypes.append(type)
 
+            if 'vector' in subtypes and 'vector_time' not in subtypes:
+                subtypes.append('vector_time')
+
             if len(subtypes) > 0:
                 types.append("layer")
                 sqs = SearchQuerySet().narrow("subtype:%s" %
@@ -344,7 +374,7 @@ class CommonModelApi(ModelResource):
             else:
                 words = [
                     w for w in re.split(
-                        '\W',
+                        r'\W',
                         query,
                         flags=re.UNICODE) if w]
                 for i, search_word in enumerate(words):
@@ -521,17 +551,15 @@ class CommonModelApi(ModelResource):
                 "total_count": total_count,
                 "facets": facets,
             },
-            "objects": map(lambda x: self.get_haystack_api_fields(x), objects),
+            "objects": [self.get_haystack_api_fields(x) for x in objects],
         }
 
         self.log_throttled_access(request)
         return self.create_response(request, object_list)
 
     def get_haystack_api_fields(self, haystack_object):
-        object_fields = dict(
-            (k, v) for k, v in haystack_object.get_stored_fields().items() if not re.search(
-                '_exact$|_sortable$', k))
-        return object_fields
+        return {k: v for k, v in haystack_object.get_stored_fields().items()
+                if not re.search('_exact$|_sortable$', k)}
 
     def get_list(self, request, **kwargs):
         """
@@ -570,24 +598,34 @@ class CommonModelApi(ModelResource):
         """
         Format the objects for output in a response.
         """
-        if 'has_time' in self.VALUES:
-            idx = self.VALUES.index('has_time')
-            del self.VALUES[idx]
-        objects_json = objects.values(*self.VALUES)
+        for key in ('site_url', 'has_time'):
+            if key in self.VALUES:
+                idx = self.VALUES.index(key)
+                del self.VALUES[idx]
 
         # hack needed because dehydrate does not seem to work in CommonModelApi
-        for item in objects_json:
-            if item['thumbnail_url'] and len(item['thumbnail_url']) == 0:
-                item['thumbnail_url'] = staticfiles.static(settings.MISSING_THUMBNAIL)
-            if item['title'] and len(item['title']) == 0:
-                item['title'] = 'No title'
-            if 'owner__username' in item:
-                username = item['owner__username']
-                profiles = Profile.objects.filter(username=username)
-                if profiles:
-                    full_name = (profiles[0].get_full_name() or username)
-                    item['owner_name'] = full_name
-        return objects_json
+        formatted_objects = []
+        for obj in objects:
+            formatted_obj = model_to_dict(obj, fields=self.VALUES)
+            if 'site_url' not in formatted_obj or len(formatted_obj['site_url']) == 0:
+                formatted_obj['site_url'] = settings.SITEURL
+
+            if formatted_obj['thumbnail_url'] and len(formatted_obj['thumbnail_url']) == 0:
+                formatted_obj['thumbnail_url'] = staticfiles.static(settings.MISSING_THUMBNAIL)
+
+            formatted_obj['owner__username'] = obj.owner.username
+            formatted_obj['owner_name'] = obj.owner.get_full_name() or obj.owner.username
+
+            # replace thumbnail_url with curated_thumbs
+            if hasattr(obj, 'curatedthumbnail'):
+                if hasattr(obj.curatedthumbnail.img_thumbnail, 'url'):
+                    formatted_obj['thumbnail_url'] = obj.curatedthumbnail.thumbnail_url
+                else:
+                    formatted_obj['thumbnail_url'] = ''
+
+            formatted_objects.append(formatted_obj)
+
+        return formatted_objects
 
     def create_response(
             self,
@@ -605,10 +643,13 @@ class CommonModelApi(ModelResource):
         # If an user does not have at least view permissions, he won't be able
         # to see the resource at all.
         filtered_objects_ids = None
-        if response_objects:
-            filtered_objects_ids = [
-                item.id for item in response_objects if request.user.has_perm(
-                    'view_resourcebase', item.get_self_resource())]
+        try:
+            if data['objects']:
+                filtered_objects_ids = [
+                    item.id for item in data['objects'] if request.user.has_perm(
+                        'view_resourcebase', item.get_self_resource())]
+        except Exception:
+            pass
 
         if isinstance(
                 data,
@@ -651,11 +692,14 @@ class ResourceBaseResource(CommonModelApi):
     """ResourceBase api"""
 
     class Meta(CommonMetaApi):
+        paginator_class = CrossSiteXHRPaginator
         queryset = ResourceBase.objects.polymorphic_queryset() \
             .distinct().order_by('-date')
         resource_name = 'base'
         excludes = ['csw_anytext', 'metadata_xml']
-        authentication = MultiAuthentication(SessionAuthentication(), GeonodeApiKeyAuthentication())
+        authentication = MultiAuthentication(SessionAuthentication(),
+                                             OAuthAuthentication(),
+                                             GeonodeApiKeyAuthentication())
 
 
 class FeaturedResourceBaseResource(CommonModelApi):
@@ -663,9 +707,12 @@ class FeaturedResourceBaseResource(CommonModelApi):
     """Only the featured resourcebases"""
 
     class Meta(CommonMetaApi):
+        paginator_class = CrossSiteXHRPaginator
         queryset = ResourceBase.objects.filter(featured=True).order_by('-date')
         resource_name = 'featured'
-        authentication = MultiAuthentication(SessionAuthentication(), GeonodeApiKeyAuthentication())
+        authentication = MultiAuthentication(SessionAuthentication(),
+                                             OAuthAuthentication(),
+                                             GeonodeApiKeyAuthentication())
 
 
 class LayerResource(CommonModelApi):
@@ -674,7 +721,7 @@ class LayerResource(CommonModelApi):
     links = fields.ListField(
         attribute='links',
         null=True,
-        use_in='detail',
+        use_in='all',
         default=[])
     if check_ogc_backend(qgis_server.BACKEND_PACKAGE):
         default_style = fields.ForeignKey(
@@ -699,7 +746,7 @@ class LayerResource(CommonModelApi):
 
     def format_objects(self, objects):
         """
-        Formats the object then adds a geogig_link as necessary.
+        Formats the object.
         """
         formatted_objects = []
         for obj in objects:
@@ -726,19 +773,18 @@ class LayerResource(CommonModelApi):
             formatted_obj['keywords'] = [k.name for k in obj.keywords.all()] if obj.keywords else []
             formatted_obj['regions'] = [r.name for r in obj.regions.all()] if obj.regions else []
 
-            # add the geogig link
-            formatted_obj['geogig_link'] = obj.geogig_link
-
             # provide style information
             bundle = self.build_bundle(obj=obj)
             formatted_obj['default_style'] = self.default_style.dehydrate(
                 bundle, for_list=True)
 
-            if self.links.use_in == 'all' or self.links.use_in == 'list':
-                formatted_obj['links'] = self.dehydrate_links(
-                    bundle)
             # Add resource uri
             formatted_obj['resource_uri'] = self.get_resource_uri(bundle)
+
+            formatted_obj['links'] = self.dehydrate_ogc_links(bundle)
+
+            if 'site_url' not in formatted_obj or len(formatted_obj['site_url']) == 0:
+                formatted_obj['site_url'] = settings.SITEURL
 
             # Probe Remote Services
             formatted_obj['store_type'] = 'dataset'
@@ -746,13 +792,22 @@ class LayerResource(CommonModelApi):
             if hasattr(obj, 'storeType'):
                 formatted_obj['store_type'] = obj.storeType
                 if obj.storeType == 'remoteStore' and hasattr(obj, 'remote_service'):
-                    formatted_obj['online'] = (obj.remote_service.probe == 200)
+                    if obj.remote_service:
+                        formatted_obj['online'] = (obj.remote_service.probe == 200)
+                    else:
+                        formatted_obj['online'] = False
+
+            formatted_obj['gtype'] = self.dehydrate_gtype(bundle)
+
+            # replace thumbnail_url with curated_thumbs
+            if hasattr(obj, 'curatedthumbnail'):
+                formatted_obj['thumbnail_url'] = obj.curatedthumbnail.thumbnail_url
 
             # put the object on the response stack
             formatted_objects.append(formatted_obj)
         return formatted_objects
 
-    def dehydrate_links(self, bundle):
+    def _dehydrate_links(self, bundle, link_types=None):
         """Dehydrate links field."""
 
         dehydrated = []
@@ -764,11 +819,24 @@ class LayerResource(CommonModelApi):
             'mime',
             'url'
         ]
-        for l in obj.link_set.all():
+
+        links = obj.link_set.all()
+        if link_types:
+            links = links.filter(link_type__in=link_types)
+        for l in links:
             formatted_link = model_to_dict(l, fields=link_fields)
             dehydrated.append(formatted_link)
 
         return dehydrated
+
+    def dehydrate_links(self, bundle):
+        return self._dehydrate_links(bundle)
+
+    def dehydrate_ogc_links(self, bundle):
+        return self._dehydrate_links(bundle, ['OGC:WMS', 'OGC:WFS', 'OGC:WCS'])
+
+    def dehydrate_gtype(self, bundle):
+        return bundle.obj.gtype
 
     def populate_object(self, obj):
         """Populate results with necessary fields
@@ -782,13 +850,13 @@ class LayerResource(CommonModelApi):
             # Default style
             try:
                 obj.qgis_default_style = obj.qgis_layer.default_style
-            except:
+            except Exception:
                 obj.qgis_default_style = None
 
             # Styles
             try:
                 obj.qgis_styles = obj.qgis_layer.styles
-            except:
+            except Exception:
                 obj.qgis_styles = []
         return obj
 
@@ -835,7 +903,7 @@ class LayerResource(CommonModelApi):
 
             layer_id = kwargs['id']
             layer = Layer.objects.get(id=layer_id)
-        except:
+        except Exception:
             return http.HttpBadRequest(reason=reason)
 
         from geonode.qgis_server.views import default_qml_style
@@ -857,13 +925,16 @@ class LayerResource(CommonModelApi):
     VALUES.append('typename')
 
     class Meta(CommonMetaApi):
+        paginator_class = CrossSiteXHRPaginator
         queryset = Layer.objects.distinct().order_by('-date')
         resource_name = 'layers'
         detail_uri_name = 'id'
         include_resource_uri = True
         allowed_methods = ['get', 'patch']
         excludes = ['csw_anytext', 'metadata_xml']
-        authentication = MultiAuthentication(SessionAuthentication(), GeonodeApiKeyAuthentication())
+        authentication = MultiAuthentication(SessionAuthentication(),
+                                             OAuthAuthentication(),
+                                             GeonodeApiKeyAuthentication())
         filtering = CommonMetaApi.filtering
         # Allow filtering using ID
         filtering.update({
@@ -904,6 +975,9 @@ class MapResource(CommonModelApi):
             formatted_obj['keywords'] = [k.name for k in obj.keywords.all()] if obj.keywords else []
             formatted_obj['regions'] = [r.name for r in obj.regions.all()] if obj.regions else []
 
+            if 'site_url' not in formatted_obj or len(formatted_obj['site_url']) == 0:
+                formatted_obj['site_url'] = settings.SITEURL
+
             # Probe Remote Services
             formatted_obj['store_type'] = 'map'
             formatted_obj['online'] = True
@@ -927,16 +1001,27 @@ class MapResource(CommonModelApi):
             ]
             for layer in map_layers:
                 formatted_map_layer = model_to_dict(
-                     layer, fields=map_layer_fields)
+                    layer, fields=map_layer_fields)
                 formatted_layers.append(formatted_map_layer)
             formatted_obj['layers'] = formatted_layers
+
+            # replace thumbnail_url with curated_thumbs
+            if hasattr(obj, 'curatedthumbnail'):
+                if hasattr(obj.curatedthumbnail.img_thumbnail, 'url'):
+                    formatted_obj['thumbnail_url'] = obj.curatedthumbnail.thumbnail_url
+                else:
+                    formatted_obj['thumbnail_url'] = ''
+
             formatted_objects.append(formatted_obj)
         return formatted_objects
 
     class Meta(CommonMetaApi):
+        paginator_class = CrossSiteXHRPaginator
         queryset = Map.objects.distinct().order_by('-date')
         resource_name = 'maps'
-        authentication = MultiAuthentication(SessionAuthentication(), GeonodeApiKeyAuthentication())
+        authentication = MultiAuthentication(SessionAuthentication(),
+                                             OAuthAuthentication(),
+                                             GeonodeApiKeyAuthentication())
 
 
 class DocumentResource(CommonModelApi):
@@ -970,16 +1055,29 @@ class DocumentResource(CommonModelApi):
             formatted_obj['keywords'] = [k.name for k in obj.keywords.all()] if obj.keywords else []
             formatted_obj['regions'] = [r.name for r in obj.regions.all()] if obj.regions else []
 
+            if 'site_url' not in formatted_obj or len(formatted_obj['site_url']) == 0:
+                formatted_obj['site_url'] = settings.SITEURL
+
             # Probe Remote Services
             formatted_obj['store_type'] = 'dataset'
             formatted_obj['online'] = True
+
+            # replace thumbnail_url with curated_thumbs
+            if hasattr(obj, 'curatedthumbnail'):
+                if hasattr(obj.curatedthumbnail.img_thumbnail, 'url'):
+                    formatted_obj['thumbnail_url'] = obj.curatedthumbnail.thumbnail_url
+                else:
+                    formatted_obj['thumbnail_url'] = ''
 
             formatted_objects.append(formatted_obj)
         return formatted_objects
 
     class Meta(CommonMetaApi):
+        paginator_class = CrossSiteXHRPaginator
         filtering = CommonMetaApi.filtering
         filtering.update({'doc_type': ALL})
         queryset = Document.objects.distinct().order_by('-date')
         resource_name = 'documents'
-        authentication = MultiAuthentication(SessionAuthentication(), GeonodeApiKeyAuthentication())
+        authentication = MultiAuthentication(SessionAuthentication(),
+                                             OAuthAuthentication(),
+                                             GeonodeApiKeyAuthentication())

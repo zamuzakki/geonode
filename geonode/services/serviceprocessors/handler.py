@@ -24,6 +24,7 @@ import logging
 from django.utils.datastructures import OrderedDict
 
 from .. import enumerations
+from .arcgis import ArcMapServiceHandler, ArcImageServiceHandler
 from .wms import WmsServiceHandler, GeoNodeServiceHandler
 
 logger = logging.getLogger(__name__)
@@ -31,17 +32,15 @@ logger = logging.getLogger(__name__)
 
 def get_service_handler(base_url, proxy_base=None, service_type=enumerations.AUTO):
     """Return the appropriate remote service handler for the input URL.
-
     If the service type is not explicitly passed in it will be guessed from
-
     """
-
     handlers = OrderedDict({
         enumerations.WMS: {"OWS": True, "handler": WmsServiceHandler},
         enumerations.GN_WMS: {"OWS": True, "handler": GeoNodeServiceHandler},
         # enumerations.WFS: {"OWS": True, "handler": ServiceHandlerBase},
         # enumerations.TMS: {"OWS": False, "handler": ServiceHandlerBase},
-        # enumerations.REST: {"OWS": False, "handler": ServiceHandlerBase},
+        enumerations.REST_MAP: {"OWS": False, "handler": ArcMapServiceHandler},
+        enumerations.REST_IMG: {"OWS": False, "handler": ArcImageServiceHandler},
         # enumerations.CSW: {"OWS": False, "handler": ServiceHandlerBase},
         # enumerations.HGL: {"OWS": True, "handler": ServiceHandlerBase},  # TODO: verify this
         # enumerations.OGP: {"OWS": False, "handler": ServiceHandlerBase},  # TODO: verify this
@@ -50,9 +49,9 @@ def get_service_handler(base_url, proxy_base=None, service_type=enumerations.AUT
         if service_type == enumerations.AUTO:
             to_check = handlers.keys()
         else:
-            to_check = [k for k, v in handlers.items() if v["OWS"]]
+            to_check = (k for k, v in handlers.items() if v["OWS"])
         for type_ in to_check:
-            logger.info("Checking {}...".format(type_))
+            logger.debug("Checking {}...".format(type_))
             try:
                 service = get_service_handler(base_url, type_)
             except Exception:

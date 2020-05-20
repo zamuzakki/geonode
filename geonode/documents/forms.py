@@ -18,16 +18,17 @@
 #
 #########################################################################
 
-import json
+from geonode.base.forms import ResourceBaseForm
 import os
 import re
-from autocomplete_light.registry import autodiscover
+import json
+import logging
 
 from django import forms
 from django.utils.translation import ugettext as _
 from django.contrib.contenttypes.models import ContentType
 from django.conf import settings
-from django.forms import HiddenInput, TextInput
+from django.forms import HiddenInput
 from modeltranslation.forms import TranslationModelForm
 
 from geonode.documents.models import (
@@ -38,9 +39,7 @@ from geonode.documents.models import (
 from geonode.maps.models import Map
 from geonode.layers.models import Layer
 
-autodiscover() # flake8: noqa
-
-from geonode.base.forms import ResourceBaseForm
+logger = logging.getLogger(__name__)
 
 
 class DocumentFormMixin(object):
@@ -70,7 +69,7 @@ class DocumentFormMixin(object):
         # create and fetch desired links
         instances = []
         for link in self.cleaned_data[links_field]:
-            matches = re.match("type:(\d+)-id:(\d+)", link)
+            matches = re.match(r"type:(\d+)-id:(\d+)", link)
             if matches:
                 content_type = ContentType.objects.get(id=matches.group(1))
                 instance, _ = DocumentResourceLink.objects.get_or_create(
@@ -82,7 +81,7 @@ class DocumentFormMixin(object):
 
         # delete remaining links
         DocumentResourceLink.objects\
-                .exclude(pk__in=[i.pk for i in instances]).delete()
+            .filter(document_id=self.instance.id).exclude(pk__in=[i.pk for i in instances]).delete()
 
 
 class DocumentForm(ResourceBaseForm, DocumentFormMixin):
@@ -110,9 +109,9 @@ class DocumentForm(ResourceBaseForm, DocumentFormMixin):
 
 
 class DocumentDescriptionForm(forms.Form):
-    title = forms.CharField(300)
-    abstract = forms.CharField(2000, widget=forms.Textarea, required=False)
-    keywords = forms.CharField(500, required=False)
+    title = forms.CharField(max_length=300)
+    abstract = forms.CharField(max_length=2000, widget=forms.Textarea, required=False)
+    keywords = forms.CharField(max_length=500, required=False)
 
 
 class DocumentReplaceForm(forms.ModelForm):
@@ -172,7 +171,6 @@ class DocumentCreateForm(TranslationModelForm, DocumentFormMixin):
         label=_("Link to"),
         required=False)
 
-
     class Meta:
         model = Document
         fields = ['title', 'doc_file', 'doc_url']
@@ -204,9 +202,11 @@ class DocumentCreateForm(TranslationModelForm, DocumentFormMixin):
         doc_url = self.cleaned_data.get('doc_url')
 
         if not doc_file and not doc_url:
+            logger.debug("Document must be a file or url.")
             raise forms.ValidationError(_("Document must be a file or url."))
 
         if doc_file and doc_url:
+            logger.debug("A document cannot have both a file and a url.")
             raise forms.ValidationError(
                 _("A document cannot have both a file and a url."))
 
@@ -221,6 +221,7 @@ class DocumentCreateForm(TranslationModelForm, DocumentFormMixin):
         if doc_file and not os.path.splitext(
                 doc_file.name)[1].lower()[
                 1:] in settings.ALLOWED_DOCUMENT_TYPES:
+            logger.debug("This file type is not allowed")
             raise forms.ValidationError(_("This file type is not allowed"))
 
         return doc_file

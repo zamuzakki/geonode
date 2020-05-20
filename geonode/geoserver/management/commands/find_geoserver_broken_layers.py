@@ -20,18 +20,18 @@
 
 import sys
 
+from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand
 
 from geonode.geoserver.helpers import gs_catalog
 from geonode.layers.models import Layer
-from geonode.people.models import Profile
 
 
 def is_gs_resource_valid(layer):
     gs_resource = gs_catalog.get_resource(
-            layer.name,
-            store=layer.store,
-            workspace=layer.workspace)
+        name=layer.name,
+        store=layer.store,
+        workspace=layer.workspace)
     if gs_resource:
         return True
     else:
@@ -68,7 +68,7 @@ class Command(BaseCommand):
         else:
             layers = Layer.objects.all()
         if options['owner']:
-            layers = layers.filter(owner=Profile.objects.filter(username=options['owner']))
+            layers = layers.filter(owner=get_user_model().objects.filter(username=options['owner']))
 
         layers_count = layers.count()
         count = 0
@@ -77,19 +77,24 @@ class Command(BaseCommand):
         for layer in layers:
             count += 1
             try:
-                print 'Checking layer %s/%s: %s owned by %s' % (count,
-                                                                layers_count,
-                                                                layer.alternate,
-                                                                layer.owner.username)
+                print("Checking layer {}/{}: {} owned by {}".format(
+                    count,
+                    layers_count,
+                    layer.alternate,
+                    layer.owner.username
+                ))
                 if not is_gs_resource_valid(layer):
-                    print 'Layer %s is broken!' % layer.alternate
+                    print("Layer {} is broken!".format(layer.alternate))
                     layer_errors.append(layer)
                     if options['remove']:
-                        print 'Removing this layer...'
+                        print("Removing this layer...")
                         layer.delete()
-            except:
+            except Exception:
                 print("Unexpected error:", sys.exc_info()[0])
 
-        print '\n***** Layers with errors: %s in a total of %s *****' % (len(layer_errors), layers_count)
+        print("\n***** Layers with errors: {} in a total of {} *****".format(
+            len(layer_errors),
+            layers_count
+        ))
         for layer_error in layer_errors:
-            print '%s by %s' % (layer.alternate, layer.owner.username)
+            print("{} by {}".format(layer_error.alternate, layer_error.owner.username))

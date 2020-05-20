@@ -19,7 +19,7 @@
 #########################################################################
 
 from django.conf import settings
-from django.core.urlresolvers import reverse
+from django.urls import reverse
 
 from geonode.geoserver.helpers import ogc_server_settings
 from geonode.qgis_server.forms import QGISLayerStyleUploadForm
@@ -38,7 +38,6 @@ def qgis_server_urls(request):
         MAPFISH_PRINT_ENABLED=getattr(ogc_server_settings, 'MAPFISH_PRINT_ENABLED', False),
         PRINT_NG_ENABLED=getattr(ogc_server_settings, 'PRINT_NG_ENABLED', False),
         GEONODE_SECURITY_ENABLED=getattr(ogc_server_settings, 'GEONODE_SECURITY_ENABLED', False),
-        GEOGIG_ENABLED=getattr(ogc_server_settings, 'GEOGIG_ENABLED', False),
         TIME_ENABLED=getattr(
                 settings,
                 'UPLOADER',
@@ -56,5 +55,6 @@ def qgis_server_urls(request):
                         'MOSAIC_ENABLED',
                         False),
     )
+
     defaults['style_upload_form'] = QGISLayerStyleUploadForm()
     return defaults

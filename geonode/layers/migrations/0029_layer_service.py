@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-from __future__ import unicode_literals
 
 from django.db import migrations, models
 
@@ -15,6 +14,6 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='layer',
             name='service',
-            field=models.ForeignKey(blank=True, to='services.Service', null=True),
+            field=models.ForeignKey(blank=True, on_delete=models.CASCADE, to='services.Service', null=True),
         ),
     ]

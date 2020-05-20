@@ -17,9 +17,8 @@
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 #########################################################################
-
-from geonode.layers.models import Style, Attribute, Layer
 from django.conf import settings
+from geonode.layers.models import Style, Attribute, Layer
 
 ogc_location = settings.OGC_SERVER['default']['LOCATION']
 
@@ -76,8 +75,8 @@ styles = [{"name": "test_style_1",
 
 attributes = [
     {
-        "attribute": u'N\xfamero_De_M\xe9dicos',
-        "attribute_label": u'N\xfamero_De_M\xe9dicos',
+        "attribute": 'N\xfamero_De_M\xe9dicos',
+        "attribute_label": 'N\xfamero_De_M\xe9dicos',
         "attribute_type": "xsd:string",
         "visible": True,
         "display_order": 4
@@ -106,8 +105,9 @@ attributes = [
 ]
 
 
-def create_layer_data():
-    layer = Layer.objects.get(pk=1)
+def create_layer_data(object_id=None):
+    layer = Layer.objects.get(pk=object_id) if object_id else\
+        Layer.objects.all().first()
     for style in styles:
         new_style = Style.objects.create(
             name=style['name'],

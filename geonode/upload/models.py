@@ -18,17 +18,21 @@
 #
 #########################################################################
 
-import cPickle as pickle
-import logging
+import base64
+import pickle
 import shutil
-from datetime import datetime
-from django.core.urlresolvers import reverse
+import logging
+
+from os import path
+
+from django.urls import reverse
 from django.db import models
 from django.conf import settings
+from django.utils.timezone import now
+
 from geonode.layers.models import Layer
 from geonode.geoserver.helpers import gs_uploader, ogc_server_settings
 from gsimporter import NotFound
-from os import path
 
 
 class UploadManager(models.Manager):
@@ -56,16 +60,16 @@ class Upload(models.Model):
     objects = UploadManager()
 
     import_id = models.BigIntegerField(null=True)
-    user = models.ForeignKey(settings.AUTH_USER_MODEL, null=True)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL)
     # hold importer state or internal state (STATE_)
     state = models.CharField(max_length=16)
-    date = models.DateTimeField('date', default=datetime.now)
-    layer = models.ForeignKey(Layer, null=True)
-    upload_dir = models.CharField(max_length=100, null=True)
+    date = models.DateTimeField('date', default=now)
+    layer = models.ForeignKey(Layer, null=True, on_delete=models.SET_NULL)
+    upload_dir = models.TextField(null=True)
     name = models.CharField(max_length=64, null=True)
     complete = models.BooleanField(default=False)
     # hold our serialized session object
-    session = models.TextField(null=True)
+    session = models.TextField(null=True, blank=True)
     # hold a dict of any intermediate Layer metadata - not used for now
     metadata = models.TextField(null=True)
 
@@ -86,20 +90,19 @@ class Upload(models.Model):
 
     def get_session(self):
         if self.session:
-            return pickle.loads(str(self.session))
+            return pickle.loads(
+                base64.decodestring(self.session.encode('UTF-8')))
 
     def update_from_session(self, upload_session):
         self.state = upload_session.import_session.state
-        self.date = datetime.now()
+        self.date = now()
         if "COMPLETE" == self.state:
             self.complete = True
             self.session = None
         else:
-            # Make sure we don't pickle UTF-8 chars
-            upload_session.user.first_name = u'{}'.format(upload_session.user.first_name).encode('ascii', 'ignore')
-            upload_session.user.last_name = u'{}'.format(upload_session.user.last_name).encode('ascii', 'ignore')
-            unicode_session = pickle.dumps(upload_session)
-            self.session = unicode_session
+            upload_session.user.first_name = upload_session.user.first_name
+            upload_session.user.last_name = upload_session.user.last_name
+            self.session = base64.encodestring(pickle.dumps(upload_session)).decode('UTF-8')
         if self.upload_dir is None:
             self.upload_dir = path.dirname(upload_session.base_file)
             self.name = upload_session.layer_title or upload_session.name
@@ -125,12 +128,12 @@ class Upload(models.Model):
             if session:
                 try:
                     session.delete()
-                except:
+                except Exception:
                     logging.exception('error deleting upload session')
             if self.upload_dir and path.exists(self.upload_dir):
                 shutil.rmtree(self.upload_dir)
 
-    def __unicode__(self):
+    def __str__(self):
         return 'Upload [%s] gs%s - %s, %s' % (self.pk,
                                               self.import_id,
                                               self.name,
@@ -138,16 +141,15 @@ class Upload(models.Model):
 
 
 class UploadFile(models.Model):
-    upload = models.ForeignKey(Upload, null=True, blank=True)
+    upload = models.ForeignKey(Upload, null=True, blank=True, on_delete=models.SET_NULL)
     file = models.FileField(upload_to="uploads")
     slug = models.SlugField(max_length=50, blank=True)
 
-    def __unicode__(self):
-        return self.slug
+    def __str__(self):
+        return "{0}".format(self.slug)
 
-    @models.permalink
     def get_absolute_url(self):
-        return ('data_upload_new', )
+        return reverse('data_upload_new', args=[self.slug, ])
 
     def save(self, *args, **kwargs):
         self.slug = self.file.name

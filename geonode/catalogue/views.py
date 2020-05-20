@@ -22,17 +22,19 @@ import json
 import os
 import logging
 import xml.etree.ElementTree as ET
+from defusedxml import lxml as dlxml
 from django.conf import settings
 from django.http import HttpResponse, HttpResponseRedirect
 from django.shortcuts import render
+from django.contrib.auth import get_user_model
 from django.views.decorators.csrf import csrf_exempt
 from pycsw import server
 from guardian.shortcuts import get_objects_for_user
 from geonode.catalogue.backends.pycsw_local import CONFIGURATION
 from geonode.base.models import ResourceBase
 from geonode.layers.models import Layer
+from geonode.base.auth import get_or_create_token
 from geonode.base.models import ContactRole, SpatialRepresentationType
-from geonode.people.models import Profile
 from geonode.groups.models import GroupProfile
 from django.db import connection
 from django.core.exceptions import ObjectDoesNotExist
@@ -50,23 +52,24 @@ def csw_global_dispatch(request):
     mdict = dict(settings.PYCSW['CONFIGURATION'], **CONFIGURATION)
 
     access_token = None
-    if 'access_token' in request.session:
-        access_token = request.session['access_token']
+    if request and request.user:
+        access_token = get_or_create_token(request.user)
+        if access_token and access_token.is_expired():
+            access_token = None
 
     absolute_uri = ('%s' % request.build_absolute_uri())
     query_string = ('%s' % request.META['QUERY_STRING'])
-
-    if access_token and 'access_token' not in query_string:
-        absolute_uri = ('%s&access_token=%s' % (absolute_uri, access_token))
-        query_string = ('%s&access_token=%s' % (query_string, access_token))
-
     env = request.META.copy()
+
+    if access_token and not access_token.is_expired():
+        env.update({'access_token': access_token.token})
+        if 'access_token' not in query_string:
+            absolute_uri = ('%s&access_token=%s' % (absolute_uri, access_token.token))
+            query_string = ('%s&access_token=%s' % (query_string, access_token.token))
+
     env.update({'local.app_root': os.path.dirname(__file__),
                 'REQUEST_URI': absolute_uri,
                 'QUERY_STRING': query_string})
-
-    if access_token:
-        env.update({'access_token': access_token})
 
     # Save original filter before doing anything
     mdict_filter = mdict['repository']['filter']
@@ -75,9 +78,9 @@ def csw_global_dispatch(request):
         # Filter out Layers not accessible to the User
         authorized_ids = []
         if request.user:
-            profiles = Profile.objects.filter(username=str(request.user))
+            profiles = get_user_model().objects.filter(username=str(request.user))
         else:
-            profiles = Profile.objects.filter(username="AnonymousUser")
+            profiles = get_user_model().objects.filter(username="AnonymousUser")
         if profiles:
             authorized = list(
                 get_objects_for_user(
@@ -93,6 +96,9 @@ def csw_global_dispatch(request):
                                                  for e in authorized_ids)) + ")"
             authorized_layers_filter = "id IN " + authorized_layers
             mdict['repository']['filter'] += " AND " + authorized_layers_filter
+            if request.user and request.user.is_authenticated:
+                mdict['repository']['filter'] = "({}) OR ({})".format(mdict['repository']['filter'],
+                                                                      authorized_layers_filter)
         else:
             authorized_layers_filter = "id = -9999"
             mdict['repository']['filter'] += " AND " + authorized_layers_filter
@@ -108,13 +114,13 @@ def csw_global_dispatch(request):
 
         if not is_admin and settings.GROUP_PRIVATE_RESOURCES:
             groups_ids = []
-            if request.user:
+            if request.user and request.user.is_authenticated:
                 for group in request.user.groups.all():
                     groups_ids.append(group.id)
                 group_list_all = []
                 try:
                     group_list_all = request.user.group_list_all().values('group')
-                except BaseException:
+                except Exception:
                     pass
                 for group in group_list_all:
                     if isinstance(group, dict):
@@ -124,7 +130,7 @@ def csw_global_dispatch(request):
                         groups_ids.append(group.id)
 
             public_groups = GroupProfile.objects.exclude(
-                access="private").exclude(access="public-invite").values('group')
+                access="private").values('group')
             for group in public_groups:
                 if isinstance(group, dict):
                     if 'group' in group:
@@ -164,11 +170,11 @@ def csw_global_dispatch(request):
                   'gco': 'http://www.isotc211.org/2005/gco',
                   'gmi': 'http://www.isotc211.org/2005/gmi'}
 
-        for prefix, uri in spaces.iteritems():
+        for prefix, uri in spaces.items():
             ET.register_namespace(prefix, uri)
 
-        if access_token:
-            tree = ET.fromstring(content)
+        if access_token and not access_token.is_expired():
+            tree = dlxml.fromstring(content)
             for online_resource in tree.findall(
                     '*//gmd:CI_OnlineResource', spaces):
                 try:
@@ -179,9 +185,9 @@ def csw_global_dispatch(request):
                                 url.text += "?"
                             else:
                                 url.text += "&"
-                            url.text += ("access_token=%s" % (access_token))
+                            url.text += ("access_token=%s" % (access_token.token))
                             url.set('updated', 'yes')
-                except BaseException:
+                except Exception:
                     pass
             content = ET.tostring(tree, encoding='utf8', method='xml')
     finally:
@@ -202,7 +208,7 @@ def opensearch_dispatch(request):
         'contact': settings.PYCSW['CONFIGURATION']['metadata:main']['contact_email'],
         'attribution': settings.PYCSW['CONFIGURATION']['metadata:main']['provider_name'],
         'tags': settings.PYCSW['CONFIGURATION']['metadata:main']['identification_keywords'].replace(',', ' '),
-        'url': settings.SITEURL.rstrip('/')
+        'url': settings.SITEURL.rstrip('/') if settings.SITEURL.startswith('http') else settings.SITEURL
     }
 
     return render(request, 'catalogue/opensearch_description.xml', context=ctx,
@@ -219,9 +225,9 @@ def data_json(request):
         record['description'] = resource.abstract
         record['keyword'] = resource.keyword_csv.split(',')
         record['modified'] = resource.csw_insert_date.isoformat()
-        record['publisher'] = resource.poc.organization
-        record['contactPoint'] = resource.poc.name_long
-        record['mbox'] = resource.poc.email
+        record['publisher'] = resource.poc.organization if resource.poc else None
+        record['contactPoint'] = resource.poc.name_long if resource.poc else None
+        record['mbox'] = resource.poc.email if resource.poc else None
         record['identifier'] = resource.uuid
         if resource.is_published:
             record['accessLevel'] = 'public'
@@ -241,12 +247,9 @@ def data_json(request):
 
 # transforms a row sql query into a two dimension array
 def dictfetchall(cursor):
-    """Returns all rows from a cursor as a dict"""
-    desc = cursor.description
-    return [
-        dict(zip([col[0] for col in desc], row))
-        for row in cursor.fetchall()
-    ]
+    """Generate all rows from a cursor as a dict"""
+    for row in cursor.fetchall():
+        yield {col[0]: row for col in cursor.description}
 
 
 # choose separators
@@ -257,8 +260,9 @@ def get_CSV_spec_char():
 # format value to unicode str without ';' char
 def fst(value):
     chrs = get_CSV_spec_char()
-    return unicode(value).replace(chrs["separator"],
-                                  ',').replace('\\n', ' ').replace('\r\n', ' ')
+    result = "{}".format(value)
+    result = result.replace(chrs["separator"], ',').replace('\\n', ' ').replace('\r\n', ' ')
+    return result
 
 
 # from a resource object, build the corresponding metadata dict
@@ -277,8 +281,7 @@ def get_keywords(resource):
     cursor.execute(
         "SELECT a.*,b.* FROM taggit_taggeditem as a,taggit_tag"
         " as b WHERE a.object_id = %s AND a.tag_id=b.id", [resource.id])
-    struct_kw = dictfetchall(cursor)
-    for x in struct_kw:
+    for x in dictfetchall(cursor):
         content += fst(x['name']) + ', '
     return content[:-2]
 
@@ -357,7 +360,7 @@ def csw_render_extra_format_txt(request, layeruuid, resname):
 
     pocr = ContactRole.objects.get(
         resource_id=resource.id, role='pointOfContact')
-    pocp = Profile.objects.get(id=pocr.contact_id)
+    pocp = get_user_model().objects.get(id=pocr.contact_id)
     content += "Point of Contact" + sc
     content += "name" + s + fst(pocp.last_name) + sc
     content += "e-mail" + s + fst(pocp.email) + sc
@@ -365,8 +368,7 @@ def csw_render_extra_format_txt(request, layeruuid, resname):
     logger = logging.getLogger(__name__)
     logger.error(content)
 
-    return HttpResponse(content.encode('utf-8').decode('utf-8'),
-                        content_type="text/csv")
+    return HttpResponse(content, content_type="text/csv")
 
 
 def csw_render_extra_format_html(request, layeruuid, resname):
@@ -388,18 +390,14 @@ def csw_render_extra_format_html(request, layeruuid, resname):
         layer = Layer.objects.get(resourcebase_ptr_id=resource.id)
         extra_res_md['atrributes'] = ''
         for attr in layer.attribute_set.all():
-            extra_res_md['atrributes'] += '<tr>'
-            extra_res_md['atrributes'] += '<td>' + unicode(
-                attr.attribute) + '</td>'
-            extra_res_md['atrributes'] += '<td>' + unicode(
-                attr.attribute_label) + '</td>'
-            extra_res_md['atrributes'] += '<td>' + unicode(
-                attr.description) + '</td>'
-            extra_res_md['atrributes'] += '</tr>'
+            s = "<tr><td>{}</td><td>{}</td><td>{}</td></tr>".format(
+                attr.attribute, attr.attribute_label, attr.description
+            )
+            extra_res_md['atrributes'] += s
 
     pocr = ContactRole.objects.get(
         resource_id=resource.id, role='pointOfContact')
-    pocp = Profile.objects.get(id=pocr.contact_id)
+    pocp = get_user_model().objects.get(id=pocr.contact_id)
     extra_res_md['poc_last_name'] = pocp.last_name
     extra_res_md['poc_email'] = pocp.email
     return render(request, "geonode_metadata_full.html", context={"resource": resource,

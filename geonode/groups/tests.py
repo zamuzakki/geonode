@@ -18,36 +18,45 @@
 #
 #########################################################################
 
+from geonode.tests.base import GeoNodeBaseTestSupport
+
 import json
+import logging
+from six import string_types
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.core.urlresolvers import reverse
-from django.test import TestCase
+from django.urls import reverse
 from django.test import override_settings
 from django.conf import settings
 
 from guardian.shortcuts import get_anonymous_user
 
-from geonode.groups.models import GroupProfile, GroupCategory
+from geonode.groups.models import (
+    GroupProfile,
+    GroupMember,
+    GroupCategory)
 from geonode.documents.models import Document
 from geonode.layers.models import Layer
 from geonode.maps.models import Map
-from geonode.base.populate_test_data import create_models
 from geonode.security.views import _perms_info_json
+from geonode.groups.conf import settings as groups_settings
+
+logger = logging.getLogger(__name__)
 
 
-class SmokeTest(TestCase):
+def _log(msg, *args):
+    logger.debug(msg, *args)
+
+
+class SmokeTest(GeoNodeBaseTestSupport):
     """
     Basic checks to make sure pages load, etc.
     """
 
-    fixtures = ['initial_data.json', "group_test_data"]
-
     def setUp(self):
-        create_models(type='layer')
-        create_models(type='map')
-        create_models(type='document')
+        super(SmokeTest, self).setUp()
+
         self.norman = get_user_model().objects.get(username="norman")
         self.norman.groups.add(Group.objects.get(name='anonymous'))
         self.test_user = get_user_model().objects.get(username='test_user')
@@ -55,12 +64,65 @@ class SmokeTest(TestCase):
         self.bar = GroupProfile.objects.get(slug='bar')
         self.anonymous_user = get_anonymous_user()
 
+    def test_registered_group_exists(self):
+        """
+        Ensures that a default group and grouprofile 'registered-users' has been
+        created at initialization time.
+        """
+        self.assertTrue(
+            groups_settings.AUTO_ASSIGN_REGISTERED_MEMBERS_TO_REGISTERED_MEMBERS_GROUP_NAME)
+        group = Group.objects.filter(
+            name=groups_settings.REGISTERED_MEMBERS_GROUP_NAME).first()
+        groupprofile = GroupProfile.objects.filter(
+            slug=groups_settings.REGISTERED_MEMBERS_GROUP_NAME).first()
+        self.assertTrue(group)
+        self.assertTrue(groupprofile)
+        self.assertEqual(groupprofile.group, group)
+        self.assertEqual(group.groupprofile, groupprofile)
+
+    def test_users_belongs_registered_group(self):
+        """
+        1. Ensures that a superuser is manager of a group despite the actual membership.
+
+        2. Ensures that any user on the system, except "AnonymousUser" belongs to
+           groups_settings.REGISTERED_MEMBERS_GROUP_NAME.
+        """
+        self.assertEqual(
+            groups_settings.AUTO_ASSIGN_REGISTERED_MEMBERS_TO_REGISTERED_MEMBERS_GROUP_NAME, True)
+
+        self.assertEqual(
+            groups_settings.AUTO_ASSIGN_REGISTERED_MEMBERS_TO_REGISTERED_MEMBERS_GROUP_AT, 'activation')
+
+        anonymous = get_user_model().objects.get(username="AnonymousUser")
+        norman = get_user_model().objects.get(username="norman")
+        admin = get_user_model().objects.get(username='admin')
+
+        # Make sure norman is a member by default (active and created)
+        groupprofile = GroupProfile.objects.filter(
+            slug=groups_settings.REGISTERED_MEMBERS_GROUP_NAME).first()
+        self.assertTrue(groupprofile.user_is_member(norman))
+
+        norman.is_active = False
+        norman.save()
+        # the signal is triggered when a user "becomes" active
+        self.assertFalse(groupprofile.user_is_member(norman))
+
+        # Ensure anonymous is not in the managers queryset
+        self.assertFalse(groupprofile.user_is_member(anonymous))
+
+        # Ensure norman is not in the managers queryset
+        self.assertTrue(norman not in groupprofile.get_managers())
+
+        # Ensure admin is in the managers queryset
+        self.assertTrue(groupprofile.user_is_member(admin))
+        self.assertTrue(groupprofile.user_is_role(admin, 'manager'))
+        self.assertFalse(admin in groupprofile.get_managers())
+
     def test_group_permissions_extend_to_user(self):
         """
         Ensures that when a user is in a group, the group permissions
         extend to the user.
         """
-
         layer = Layer.objects.all()[0]
         # Set the default permissions
         layer.set_default_permissions()
@@ -173,7 +235,7 @@ class SmokeTest(TestCase):
 
         perms_info = _perms_info_json(layer)
         # Ensure foo is in the perms_info output
-        self.assertItemsEqual(
+        self.assertCountEqual(
             json.loads(perms_info)['groups'], {
                 'bar': ['view_resourcebase']})
 
@@ -200,25 +262,25 @@ class SmokeTest(TestCase):
                     kwargs=dict(
                         resource_id=obj.id)))
             self.assertEqual(response.status_code, 200)
-            js = json.loads(response.content)
+            content = response.content
+            if isinstance(content, bytes):
+                content = content.decode('UTF-8')
+            js = json.loads(content)
             permissions = js.get('permissions', dict())
 
-            if isinstance(permissions, unicode) or isinstance(
-                    permissions, str):
+            if isinstance(permissions, string_types):
                 permissions = json.loads(permissions)
 
             # Ensure the groups value is empty by default
             expected_permissions = {}
             if settings.DEFAULT_ANONYMOUS_DOWNLOAD_PERMISSION:
                 expected_permissions.setdefault(
-                    u'anonymous', []).append(u'download_resourcebase')
+                    'anonymous', []).append('download_resourcebase')
             if settings.DEFAULT_ANONYMOUS_VIEW_PERMISSION:
                 expected_permissions.setdefault(
-                    u'anonymous', []).append(u'view_resourcebase')
+                    'anonymous', []).append('view_resourcebase')
 
-            self.assertItemsEqual(
-                permissions.get('groups'),
-                expected_permissions)
+            self.assertCountEqual(permissions.get('groups'), expected_permissions)
 
             permissions = {
                 'groups': {
@@ -245,15 +307,17 @@ class SmokeTest(TestCase):
                     kwargs=dict(
                         resource_id=obj.id)))
 
-            js = json.loads(response.content)
+            content = response.content
+            if isinstance(content, bytes):
+                content = content.decode('UTF-8')
+            js = json.loads(content)
             permissions = js.get('permissions', dict())
 
-            if isinstance(permissions, unicode) or isinstance(
-                    permissions, str):
+            if isinstance(permissions, string_types):
                 permissions = json.loads(permissions)
 
             # Make sure the bar group now has write permissions
-            self.assertItemsEqual(
+            self.assertCountEqual(
                 permissions['groups'], {
                     'bar': ['change_resourcebase']})
 
@@ -276,15 +340,17 @@ class SmokeTest(TestCase):
                     kwargs=dict(
                         resource_id=obj.id)))
 
-            js = json.loads(response.content)
+            content = response.content
+            if isinstance(content, bytes):
+                content = content.decode('UTF-8')
+            js = json.loads(content)
             permissions = js.get('permissions', dict())
 
-            if isinstance(permissions, unicode) or isinstance(
-                    permissions, str):
+            if isinstance(permissions, string_types):
                 permissions = json.loads(permissions)
 
             # Assert the bar group no longer has permissions
-            self.assertItemsEqual(permissions['groups'], {})
+            self.assertCountEqual(permissions['groups'], {})
 
     def test_create_new_group(self):
         """
@@ -365,6 +431,7 @@ class SmokeTest(TestCase):
         self.assertTrue(norman not in self.bar.get_managers())
 
         # Ensure admin is in the managers queryset
+        self.bar.join(admin, role=GroupMember.MANAGER)
         self.assertTrue(admin in self.bar.get_managers())
 
     def test_public_pages_render(self):
@@ -373,20 +440,20 @@ class SmokeTest(TestCase):
         """
 
         response = self.client.get("/groups/")
-        self.assertEqual(200, response.status_code)
+        self.assertEqual(response.status_code, 200)
 
         response = self.client.get("/groups/group/bar/")
-        self.assertEqual(200, response.status_code)
+        self.assertEqual(response.status_code, 200)
 
         response = self.client.get("/groups/group/bar/members/")
-        self.assertEqual(200, response.status_code)
+        self.assertEqual(response.status_code, 200)
 
         # 302 for auth failure since we redirect to login page
         response = self.client.get("/groups/create/")
-        self.assertEqual(302, response.status_code)
+        self.assertTrue(response.status_code in (302, 403))
 
         response = self.client.get("/groups/group/bar/update/")
-        self.assertEqual(302, response.status_code)
+        self.assertEqual(response.status_code, 302)
 
         # # 405 - json endpoint, doesn't support GET
         # response = self.client.get("/groups/group/bar/invite/")
@@ -418,6 +485,21 @@ class SmokeTest(TestCase):
         # response = self.client.get("/groups/group/bar/invite/")
         # self.assertEqual(405, response.status_code)
 
+
+class GroupActivityTest(GeoNodeBaseTestSupport):
+
+    integration = True
+
+    def setUp(self):
+        super(GroupActivityTest, self).setUp()
+
+        self.norman = get_user_model().objects.get(username="norman")
+        self.norman.groups.add(Group.objects.get(name='anonymous'))
+        self.test_user = get_user_model().objects.get(username='test_user')
+        self.test_user.groups.add(Group.objects.get(name='anonymous'))
+        self.bar = GroupProfile.objects.get(slug='bar')
+        self.anonymous_user = get_anonymous_user()
+
     def test_group_activity_pages_render(self):
         """
         Verify Activity List pages
@@ -431,7 +513,25 @@ class SmokeTest(TestCase):
         response = self.client.get("/groups/group/bar/activity/")
         self.assertEqual(200, response.status_code)
         self.assertContains(response,
-                            '<a href="/layers/geonode:CA">CA</a>',
+                            'Layers',
+                            count=3,
+                            status_code=200,
+                            msg_prefix='',
+                            html=False)
+        self.assertContains(response,
+                            'Maps',
+                            count=5,
+                            status_code=200,
+                            msg_prefix='',
+                            html=False)
+        self.assertContains(response,
+                            'Documents',
+                            count=3,
+                            status_code=200,
+                            msg_prefix='',
+                            html=False)
+        self.assertContains(response,
+                            '<a href="/layers/:geonode:CA">CA</a>',
                             count=0,
                             status_code=200,
                             msg_prefix='',
@@ -456,7 +556,7 @@ class SmokeTest(TestCase):
 
             perms_info = _perms_info_json(layer)
             # Ensure foo is in the perms_info output
-            self.assertItemsEqual(
+            self.assertCountEqual(
                 json.loads(perms_info)['groups'], {
                     'bar': ['view_resourcebase']})
 
@@ -465,8 +565,9 @@ class SmokeTest(TestCase):
 
             response = self.client.get("/groups/group/bar/activity/")
             self.assertEqual(200, response.status_code)
+            _log(response)
             self.assertContains(response,
-                                '<a href="/layers/geonode:CA">CA</a>',
+                                '<a href="/layers/:geonode:CA">geonode:CA</a>',
                                 count=2,
                                 status_code=200,
                                 msg_prefix='',
@@ -483,12 +584,10 @@ class SmokeTest(TestCase):
             layer.save()
 
 
-class MembershipTest(TestCase):
+class MembershipTest(GeoNodeBaseTestSupport):
     """
     Tests membership logic in the geonode.groups models
     """
-
-    fixtures = ["group_test_data"]
 
     def test_group_is_member(self):
         """
@@ -499,8 +598,8 @@ class MembershipTest(TestCase):
         normal = get_user_model().objects.get(username="norman")
         group = GroupProfile.objects.get(slug="bar")
 
-        self.assert_(not group.user_is_member(anon))
-        self.assert_(not group.user_is_member(normal))
+        self.assertFalse(group.user_is_member(anon))
+        self.assertFalse(group.user_is_member(normal))
 
     def test_group_add_member(self):
         """
@@ -511,8 +610,22 @@ class MembershipTest(TestCase):
         normal = get_user_model().objects.get(username="norman")
         group = GroupProfile.objects.get(slug="bar")
         group.join(normal)
-        self.assert_(group.user_is_member(normal))
+        self.assertTrue(group.user_is_member(normal))
         self.assertRaises(ValueError, lambda: group.join(anon))
+
+    def test_group_promote_demote_member(self):
+        """
+        Tests promoting a member to manager, demoting to member
+        """
+
+        normal = get_user_model().objects.get(username="norman")
+        group = GroupProfile.objects.get(slug="bar")
+        group.join(normal)
+        self.assertFalse(group.user_is_role(normal, "manager"))
+        GroupMember.objects.get(group=group, user=normal).promote()
+        self.assertTrue(group.user_is_role(normal, "manager"))
+        GroupMember.objects.get(group=group, user=normal).demote()
+        self.assertFalse(group.user_is_role(normal, "manager"))
 
     def test_profile_is_member_of_group(self):
         """
@@ -526,88 +639,27 @@ class MembershipTest(TestCase):
         group.join(normal)
         self.assertTrue(normal.is_member_of_group(group.slug))
 
+    def test_group_remove_member(self):
+        """
+        Tests removing a user from a group
+        """
 
-# class InvitationTest(TestCase):
-#     """
-#     Tests invitation logic in geonode.groups models
-#     """
-#
-#     fixtures = ["group_test_data"]
-#
-#     def test_invite_user(self):
-#         """
-#         Tests inviting a registered user
-#         """
-#
-#         normal = get_user_model().objects.get(username="norman")
-#         admin = get_user_model().objects.get(username="admin")
-#         group = GroupProfile.objects.get(slug="bar")
-#         group.invite(normal, admin, role="member", send=False)
-#
-#         self.assert_(
-#             GroupInvitation.objects.filter(
-#                 user=normal,
-#                 from_user=admin,
-#                 group=group).exists())
-#
-#         invite = GroupInvitation.objects.get(
-#             user=normal, from_user=admin, group=group)
-#
-#         # Test that the user can access the token url.
-#         self.client.login(username="norman", password="norman")
-#         response = self.client.get(
-#             "/groups/group/{group}/invite/{token}/".format(group=group, token=invite.token))
-#         self.assertEqual(200, response.status_code)
-#
-#     def test_accept_invitation(self):
-#         """
-#         Tests accepting an invitation
-#         """
-#
-#         anon = get_anonymous_user()
-#         normal = get_user_model().objects.get(username="norman")
-#         admin = get_user_model().objects.get(username="admin")
-#         group = GroupProfile.objects.get(slug="bar")
-#         group.invite(normal, admin, role="member", send=False)
-#
-#         invitation = GroupInvitation.objects.get(
-#             user=normal, from_user=admin, group=group)
-#
-#         self.assertRaises(ValueError, lambda: invitation.accept(anon))
-#         self.assertRaises(ValueError, lambda: invitation.accept(admin))
-#         invitation.accept(normal)
-#
-#         self.assert_(group.user_is_member(normal))
-#         self.assert_(invitation.state == "accepted")
-#
-#     def test_decline_invitation(self):
-#         """
-#         Tests declining an invitation
-#         """
-#
-#         anon = get_anonymous_user()
-#         normal = get_user_model().objects.get(username="norman")
-#         admin = get_user_model().objects.get(username="admin")
-#         group = GroupProfile.objects.get(slug="bar")
-#         group.invite(normal, admin, role="member", send=False)
-#
-#         invitation = GroupInvitation.objects.get(
-#             user=normal, from_user=admin, group=group)
-#
-#         self.assertRaises(ValueError, lambda: invitation.decline(anon))
-#         self.assertRaises(ValueError, lambda: invitation.decline(admin))
-#         invitation.decline(normal)
-#
-#         self.assert_(not group.user_is_member(normal))
-#         self.assert_(invitation.state == "declined")
+        normal = get_user_model().objects.get(username="norman")
+        group = GroupProfile.objects.get(slug="bar")
+        group.join(normal)
+        self.assertTrue(group.user_is_member(normal))
+        group.leave(normal)
+        self.assertFalse(group.user_is_member(normal))
 
 
-class GroupCategoriesTestCase(TestCase):
+class GroupCategoriesTestCase(GeoNodeBaseTestSupport):
     """
     Group Categories tests
     """
 
     def setUp(self):
+        super(GroupCategoriesTestCase, self).setUp()
+
         c1 = GroupCategory.objects.create(name='test #1 category')
         g = GroupProfile.objects.create(title='test')
         g.categories.add(c1)
@@ -616,16 +668,17 @@ class GroupCategoriesTestCase(TestCase):
         u = User.objects.create(username='test')
         u.set_password('test')
         u.save()
-        User = get_user_model()
-        u = User.objects.create_superuser('admin', 'admin@test.com', 'admin')
-        u.save()
 
     def test_api(self):
         api_url = '/api/groupcategory/'
 
+        self.client.login(username='test', password='test')  # login necessary because settings.API_LOCKDOWN=True
         r = self.client.get(api_url)
         self.assertEqual(r.status_code, 200)
-        data = json.loads(r.content)
+        content = r.content
+        if isinstance(content, bytes):
+            content = content.decode('UTF-8')
+        data = json.loads(content)
         self.assertEqual(
             data['meta']['total_count'],
             GroupCategory.objects.all().count())
@@ -642,6 +695,28 @@ class GroupCategoriesTestCase(TestCase):
             g = GroupCategory.objects.get(slug=item['slug'])
             self.assertEqual(item['member_count'], g.groups.all().count())
 
+        self.client.logout()
+        r = self.client.get(api_url)
+        self.assertEqual(r.status_code, 200)
+        content = r.content
+        if isinstance(content, bytes):
+            content = content.decode('UTF-8')
+        data = json.loads(content)
+        self.assertEqual(
+            data['meta']['total_count'], 1)
+
+        # check if we have non-empty group category
+        self.assertTrue(
+            GroupCategory.objects.filter(
+                groups__isnull=False).exists())
+
+        for item in data['objects']:
+            self.assertTrue(
+                GroupCategory.objects.filter(
+                    slug=item['slug']).count() == 1)
+            g = GroupCategory.objects.get(slug=item['slug'])
+            self.assertEqual(item['member_count'], 1)
+
     def test_group_categories_list(self):
         view_url = reverse('group_category_list')
         r = self.client.get(view_url)
@@ -649,13 +724,21 @@ class GroupCategoriesTestCase(TestCase):
 
     def test_group_categories_add(self):
         view_url = reverse('group_category_create')
+        # Test that the view is protected to anonymous users
+        r = self.client.get(view_url)
+        self.assertTrue(r.status_code in (302, 403))
+
+        # Test that the view is protected to non-admin users
+        self.client.login(username='test', password='test')
+        r = self.client.post(view_url)
+        self.assertTrue(r.status_code in (401, 403))
+
+        # Test that the view is accessible to administrators
+        self.client.login(username='admin', password='admin')
         r = self.client.get(view_url)
         self.assertEqual(r.status_code, 200)
 
-        r = self.client.post(view_url)
-        self.assertEqual(r.status_code, 200)
-
-        self.client.login(username='test', password='test')
+        # Create e new category
         category = 'test #3 category'
         r = self.client.post(view_url, {'name': category})
 
@@ -665,54 +748,62 @@ class GroupCategoriesTestCase(TestCase):
         self.assertTrue(q.get().slug)
 
 
-class GroupProfileTest(TestCase):
+class GroupProfileTest(GeoNodeBaseTestSupport):
 
     @override_settings(MEDIA_ROOT="/tmp/geonode_tests")
     def test_group_logo_is_present_on_list_view(self):
         """Verify that a group's logo is rendered on list view."""
-        test_group = Group(name="tester")
-        test_profile = GroupProfile(
-            group=test_group,
-            title="test",
-            slug="test",
-            description="test",
-            access="public",
-            logo=SimpleUploadedFile("dummy-file.jpg", b"dummy contents")
-        )
-        test_group.save()
-        test_profile.save()
-        response = self.client.get(
-            reverse("api_dispatch_list",
-                    kwargs={"api_name": "api", "resource_name": "groups"})
-        )
-        response_payload = json.loads(response.content)
-        returned = response_payload["objects"]
-        group = [g for g in returned if g["title"] == test_profile.title][0]
-        self.assertEqual(200, response.status_code)
-        self.assertEqual(group["logo"], test_profile.logo.url)
+        with self.settings(API_LOCKDOWN=False):
+            test_profile = GroupProfile(
+                title="test",
+                slug="test",
+                description="test",
+                access="public",
+            logo=SimpleUploadedFile("dummy-file.jpg", "dummy contents".encode("UTF-8"))
+            )
+            test_profile.save()
+            response = self.client.get(
+                reverse("api_dispatch_list",
+                        kwargs={"api_name": "api", "resource_name": "groups"})
+            )
+        content = response.content
+        if isinstance(content, bytes):
+            content = content.decode('UTF-8')
+            response_payload = json.loads(content)
+            returned = response_payload["objects"]
+            group_profile = [
+                g["group_profile"] for g in returned if
+                g["group_profile"]["title"] == test_profile.title
+            ][0]
+            self.assertEqual(200, response.status_code)
+            self.assertEqual(group_profile["logo"], test_profile.logo.url)
 
     def test_group_logo_is_not_present_on_list_view(self):
         """
         Verify that no logo exists in list view when a group doesn't have one.
         """
 
-        test_group = Group(name="tester")
-        test_profile = GroupProfile(
-            group=test_group,
-            title="test",
-            slug="test",
-            description="test",
-            access="public"
-        )
-        test_group.save()
-        test_profile.save()
+        with self.settings(API_LOCKDOWN=False):
+            test_profile = GroupProfile(
+                title="test",
+                slug="test",
+                description="test",
+                access="public"
+            )
+            test_profile.save()
 
-        response = self.client.get(
-            reverse("api_dispatch_list",
-                    kwargs={"api_name": "api", "resource_name": "groups"})
-        )
-        response_payload = json.loads(response.content)
-        returned = response_payload["objects"]
-        group = [g for g in returned if g["title"] == test_profile.title][0]
-        self.assertEqual(200, response.status_code)
-        self.assertIsNone(group["logo"])
+            response = self.client.get(
+                reverse("api_dispatch_list",
+                        kwargs={"api_name": "api", "resource_name": "groups"})
+            )
+        content = response.content
+        if isinstance(content, bytes):
+            content = content.decode('UTF-8')
+            response_payload = json.loads(content)
+            returned = response_payload["objects"]
+            group_profile = [
+                g["group_profile"] for g in returned if
+                g["group_profile"]["title"] == test_profile.title
+            ][0]
+            self.assertEqual(200, response.status_code)
+            self.assertIsNone(group_profile["logo"])

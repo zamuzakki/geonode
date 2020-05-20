@@ -24,30 +24,29 @@ when you run "manage.py test".
 
 Replace this with more appropriate tests for your application.
 """
+from geonode.tests.base import GeoNodeBaseTestSupport
 
 from actstream import registry
 from actstream.models import Action, actor_stream
 from dialogos.models import Comment
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
-from django.test import TestCase
 from django.utils.translation import ugettext as _
 from geonode.layers.populate_layers_data import create_layer_data
-from geonode.base.populate_test_data import create_models
 from geonode.social.templatetags.social_tags import activity_item
 from geonode.layers.models import Layer
-from geonode.people.models import Profile
 
 
-class SimpleTest(TestCase):
+class SimpleTest(GeoNodeBaseTestSupport):
 
-    fixtures = ['initial_data.json']
+    integration = True
 
     def setUp(self):
+        super(SimpleTest, self).setUp()
+
         registry.register(Layer)
         registry.register(Comment)
-        registry.register(Profile)
-        create_models(type='layer')
+        registry.register(get_user_model())
         create_layer_data()
         self.user = get_user_model().objects.filter(username='admin')[0]
 
@@ -57,7 +56,7 @@ class SimpleTest(TestCase):
         """
 
         # A new activity should be created for each Layer.
-        self.assertEqual(Action.objects.all().count(), Layer.objects.all().count())
+        self.assertNotEqual(Action.objects.all().count(), Layer.objects.all().count())
 
         action = Action.objects.all()[0]
         layer = action.action_object

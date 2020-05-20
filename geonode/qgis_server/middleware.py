@@ -17,9 +17,13 @@
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 #########################################################################
+from django.utils.deprecation import MiddlewareMixin
 
 
-class QGISServerLayerMiddleware(object):
+class QGISServerLayerMiddleware(MiddlewareMixin):
+
+    def __init__(self, get_response):
+        self.get_response = get_response
 
     def process_template_response(self, request, response):
         """Middleware to add more context for QGIS Server backend app.

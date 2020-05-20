@@ -17,13 +17,17 @@
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 #########################################################################
+
+from geonode.tests.base import GeoNodeBaseTestSupport
+
 import os
-import urlparse
+from urllib.parse import urlparse, parse_qs
 import unittest
 from imghdr import what
 
 from geonode.qgis_server.models import QGISServerLayer
 from lxml import etree
+from defusedxml import lxml as dlxml
 
 import gisdata
 import shutil
@@ -31,22 +35,23 @@ import shutil
 import requests
 from django.conf import settings
 from django.core.management import call_command
-from django.core.urlresolvers import reverse
-from django.test import LiveServerTestCase
+from django.urls import reverse
 
 from geonode import qgis_server
+from geonode.base.models import Region
+from geonode.compat import ensure_string
 from geonode.decorators import on_ogc_backend
 from geonode.layers.utils import file_upload
-from geonode.qgis_server.helpers import validate_django_settings, \
-    transform_layer_bbox, qgis_server_endpoint, tile_url_format, tile_url, \
+from geonode.qgis_server.helpers import get_model_path, \
+    validate_django_settings, transform_layer_bbox, \
+    qgis_server_endpoint, tile_url_format, tile_url, \
     style_get_url, style_add_url, style_list, style_set_default_url, \
     style_remove_url
 
 
-class HelperTest(LiveServerTestCase):
+class HelperTest(GeoNodeBaseTestSupport):
 
-    def setUp(self):
-        call_command('loaddata', 'people_data', verbosity=0)
+    fixtures = ['initial_data.json', 'people_data.json']
 
     @on_ogc_backend(qgis_server.BACKEND_PACKAGE)
     def test_validate_settings(self):
@@ -85,7 +90,7 @@ class HelperTest(LiveServerTestCase):
         self.assertEqual(
             settings.QGIS_SERVER_URL, qgis_server_endpoint(internal=True))
         # Public url should go to proxy url
-        parse_result = urlparse.urlparse(qgis_server_endpoint(internal=False))
+        parse_result = urlparse(qgis_server_endpoint(internal=False))
         self.assertEqual(parse_result.path, reverse('qgis_server:request'))
 
     @on_ogc_backend(qgis_server.BACKEND_PACKAGE)
@@ -102,13 +107,13 @@ class HelperTest(LiveServerTestCase):
 
         qgis_tile_url = tile_url(uploaded, 11, 1576, 1054, internal=True)
 
-        parse_result = urlparse.urlparse(qgis_tile_url)
+        parse_result = urlparse(qgis_tile_url)
 
-        base_net_loc = urlparse.urlparse(settings.QGIS_SERVER_URL).netloc
+        base_net_loc = urlparse(settings.QGIS_SERVER_URL).netloc
 
         self.assertEqual(base_net_loc, parse_result.netloc)
 
-        query_string = urlparse.parse_qs(parse_result.query)
+        query_string = parse_qs(parse_result.query)
 
         expected_query_string = {
             'SERVICE': 'WMS',
@@ -126,7 +131,7 @@ class HelperTest(LiveServerTestCase):
             'MAP_RESOLUTION': '96',
             'FORMAT_OPTIONS': 'dpi:96'
         }
-        for key, value in expected_query_string.iteritems():
+        for key, value in expected_query_string.items():
             # urlparse.parse_qs returned a dictionary of list
             actual_value = query_string[key][0]
             self.assertEqual(actual_value, value)
@@ -136,7 +141,7 @@ class HelperTest(LiveServerTestCase):
         response = requests.get(qgis_tile_url)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.headers.get('Content-Type'), 'image/png')
-        self.assertEqual(what('', h=response.content), 'png')
+        self.assertEqual(what('', h=ensure_string(response.content)), 'png')
 
         uploaded.delete()
 
@@ -156,15 +161,15 @@ class HelperTest(LiveServerTestCase):
         self.assertEqual(response.headers.get('Content-Type'), 'text/xml')
 
         # it has to contains qgis tags
-        style_xml = etree.fromstring(response.content)
+        style_xml = dlxml.fromstring(ensure_string(response.content))
         self.assertTrue('qgis' in style_xml.tag)
 
         # Add new style
         # change default style slightly
-        self.assertTrue('WhiteToBlack' not in response.content)
-        self.assertTrue('BlackToWhite' in response.content)
-        new_style_xml = etree.fromstring(
-            response.content.replace('BlackToWhite', 'WhiteToBlack'))
+        self.assertTrue('WhiteToBlack' not in ensure_string(response.content))
+        self.assertTrue('BlackToWhite' in ensure_string(response.content))
+        new_style_xml = dlxml.fromstring(
+            ensure_string(response.content).replace('BlackToWhite', 'WhiteToBlack'))
         new_xml_content = etree.tostring(new_style_xml, pretty_print=True)
 
         # save it to qml file, accessible by qgis server
@@ -177,14 +182,16 @@ class HelperTest(LiveServerTestCase):
         response = requests.get(style_url)
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.content, 'OK')
+        self.assertEqual(ensure_string(response.content), 'OK')
 
         # Get style list
         qml_styles = style_list(uploaded, internal=False)
         if qml_styles:
             expected_style_names = ['default', 'new_style']
             actual_style_names = [s.name for s in qml_styles]
-            self.assertEqual(set(expected_style_names), set(actual_style_names))
+            self.assertEqual(
+                set(expected_style_names),
+                set(actual_style_names))
 
         # Get new style
         style_url = style_get_url(uploaded, 'new_style', internal=True)
@@ -193,7 +200,7 @@ class HelperTest(LiveServerTestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.headers.get('Content-Type'), 'text/xml')
-        self.assertTrue('WhiteToBlack' in response.content)
+        self.assertTrue('WhiteToBlack' in ensure_string(response.content))
 
         # Set default style
         style_url = style_set_default_url(
@@ -202,7 +209,7 @@ class HelperTest(LiveServerTestCase):
         response = requests.get(style_url)
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.content, 'OK')
+        self.assertEqual(ensure_string(response.content), 'OK')
 
         # Remove style
         style_url = style_remove_url(uploaded, 'new_style', internal=True)
@@ -210,7 +217,7 @@ class HelperTest(LiveServerTestCase):
         response = requests.get(style_url)
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.content, 'OK')
+        self.assertEqual(ensure_string(response.content), 'OK')
 
         # Cleanup
         uploaded.delete()
@@ -292,3 +299,9 @@ class HelperTest(LiveServerTestCase):
 
         # cleanup
         uploaded.delete()
+
+    @on_ogc_backend(qgis_server.BACKEND_PACKAGE)
+    def test_get_model_path(self):
+        region = Region.objects.first()
+        model_path = get_model_path(region)
+        self.assertEqual(model_path, 'base.region')

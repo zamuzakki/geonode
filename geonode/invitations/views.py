@@ -23,19 +23,22 @@ from django.contrib.sites.models import Site
 try:
     from django.urls import reverse
 except ImportError:
-    from django.core.urlresolvers import reverse
+    from django.urls import reverse
 from django.utils import timezone
 from django.utils.translation import ugettext as _
+from django.contrib.auth.decorators import login_required
 
 from .forms import GeoNodeInviteForm
 from invitations import signals
 from invitations.views import SendInvite
 from invitations.utils import get_invitation_model
 from invitations.adapters import get_invitations_adapter
+from geonode.decorators import view_decorator
 
 Invitation = get_invitation_model()
 
 
+@view_decorator(login_required, subclass=True)
 class GeoNodeSendInvite(SendInvite):
     template_name = 'invitations/forms/_invite.html'
     form_class = GeoNodeInviteForm
@@ -74,7 +77,7 @@ class GeoNodeSendInvite(SendInvite):
                 self.get_context_data(
                     error_message=_("Sorry, it was not possible to invite '%(email)s'"
                                     " due to the following isse: %(error)s (%(type)s)") % {
-                                    "email": emails, "error": str(e), "type": type(e)}))
+                        "email": emails, "error": str(e), "type": type(e)}))
         else:
             return self.render_to_response(
                 self.get_context_data(form=form))
@@ -94,11 +97,8 @@ class GeoNodeSendInvite(SendInvite):
         })
 
         email_template = 'invitations/email/email_invite'
-
-        get_invitations_adapter().send_mail(
-            email_template,
-            invite.email,
-            ctx)
+        adapter = get_invitations_adapter()
+        adapter.send_invitation_email(email_template, invite.email, ctx)
         invite.sent = timezone.now()
         invite.save()
 

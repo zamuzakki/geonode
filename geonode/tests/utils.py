@@ -18,21 +18,196 @@
 #
 #########################################################################
 
-import contextlib
-import copy
-import urllib
-import urllib2
+from geonode.tests.base import GeoNodeBaseTestSupport
 
-from django.core.management import call_command
-from django.db.models import signals
-from django.test import TestCase
+import os
+import copy
+import base64
+import pickle
+import requests
+from urllib.parse import urlencode
+from urllib.request import (
+    urlopen,
+    build_opener,
+    install_opener,
+    HTTPCookieProcessor,
+    HTTPPasswordMgrWithDefaultRealm,
+    HTTPBasicAuthHandler,
+)
+from urllib.error import HTTPError, URLError
+import logging
+import contextlib
+
+from io import IOBase
+from bs4 import BeautifulSoup
+from requests_toolbelt.multipart.encoder import MultipartEncoder
+
 from django.core import mail
 from django.conf import settings
+from django.db.models import signals
+from django.urls import reverse
+from django.core.management import call_command
+from django.contrib.auth import get_user_model
+from django.test.client import Client as DjangoTestClient
 
-from geonode.geoserver.signals import geoserver_post_save
 from geonode.maps.models import Layer
-from geonode.utils import set_attributes
+from geonode.geoserver.helpers import set_attributes
+from geonode.geoserver.signals import geoserver_post_save
 from geonode.notifications_helper import has_notifications, notifications
+
+logger = logging.getLogger(__name__)
+
+
+def upload_step(step=None):
+    step = reverse('data_upload', args=[step] if step else [])
+    return step
+
+
+class Client(DjangoTestClient):
+
+    """client for making http requests"""
+
+    def __init__(self, url, user, passwd, *args, **kwargs):
+        super(Client, self).__init__(*args)
+
+        self.url = url
+        self.user = user
+        self.passwd = passwd
+        self.csrf_token = None
+        self.response_cookies = None
+        self._session = requests.Session()
+
+        self._register_user()
+
+    def _register_user(self):
+        u, _ = get_user_model().objects.get_or_create(username=self.user)
+        u.is_active = True
+        u.email = 'admin@geonode.org'
+        u.set_password(self.passwd)
+        u.save()
+
+    def make_request(self, path, data=None, ajax=False, debug=True, force_login=False):
+        url = path if path.startswith("http") else self.url + path
+
+        if ajax:
+            url += "{}force_ajax=true".format('&' if '?' in url else '?')
+            self._session.headers['X_REQUESTED_WITH'] = "XMLHttpRequest"
+
+        cookie_value = self._session.cookies.get(settings.SESSION_COOKIE_NAME)
+        if force_login and cookie_value:
+            self.response_cookies += "; {}={}".format(settings.SESSION_COOKIE_NAME, cookie_value)
+
+        if self.csrf_token:
+            self._session.headers['X-CSRFToken'] = self.csrf_token
+
+        if self.response_cookies:
+            self._session.headers['cookie'] = self.response_cookies
+
+        if data:
+            for name, value in data.items():
+                if isinstance(value, IOBase):
+                    data[name] = (os.path.basename(value.name), value)
+
+            encoder = MultipartEncoder(fields=data)
+            self._session.headers['Content-Type'] = encoder.content_type
+            response = self._session.post(url, data=encoder)
+        else:
+            response = self._session.get(url)
+
+        try:
+            response.raise_for_status()
+        except requests.exceptions.HTTPError as ex:
+            message = ''
+            if hasattr(ex, 'message'):
+                if debug:
+                    logger.error('error in request to %s' % path)
+                    logger.error(ex.message)
+                message = ex.message[ex.message.index(':')+2:]
+            else:
+                message = str(ex)
+            raise HTTPError(url, response.status_code, message, response.headers, None)
+
+        return response
+
+    def get(self, path, debug=True):
+        return self.make_request(path, debug=debug)
+
+    def login(self):
+        """ Method to login the GeoNode site"""
+        from django.contrib.auth import authenticate
+        assert authenticate(username=self.user, password=self.passwd)
+
+        self.csrf_token = self.get_csrf_token()
+        params = {'csrfmiddlewaretoken': self.csrf_token,
+                  'login': self.user,
+                  'next': '/',
+                  'password': self.passwd}
+        response = self.make_request(
+            reverse('account_login'),
+            data=params
+        )
+        self.csrf_token = self.get_csrf_token()
+        self.response_cookies = response.headers.get('Set-Cookie')
+
+    def upload_file(self, _file):
+        """ function that uploads a file, or a collection of files, to
+        the GeoNode"""
+        if not self.csrf_token:
+            self.login()
+        spatial_files = ("dbf_file", "shx_file", "prj_file")
+        base, ext = os.path.splitext(_file)
+        params = {
+            # make public since wms client doesn't do authentication
+            'permissions': '{ "users": {"AnonymousUser": ["view_resourcebase"]} , "groups":{}}',
+            'csrfmiddlewaretoken': self.csrf_token,
+            'time': 'true',
+            'charset': 'UTF-8'
+        }
+
+        # deal with shapefiles
+        if ext.lower() == '.shp':
+            for spatial_file in spatial_files:
+                ext, _ = spatial_file.split('_')
+                file_path = base + '.' + ext
+                # sometimes a shapefile is missing an extra file,
+                # allow for that
+                if os.path.exists(file_path):
+                    params[spatial_file] = open(file_path, 'rb')
+        elif ext.lower() == '.tif':
+            file_path = base + ext
+            params['tif_file'] = open(file_path, 'rb')
+
+        base_file = open(_file, 'rb')
+        params['base_file'] = base_file
+        resp = self.make_request(
+            upload_step(),
+            data=params,
+            ajax=True,
+            force_login=True)
+        try:
+            return resp, resp.json()
+        except ValueError:
+            logger.exception(ValueError("probably not json, status {}".format(resp.status_code)))
+            return resp, resp.content
+
+    def get_html(self, path, debug=True):
+        """ Method that make a get request and passes the results to bs4
+        Takes a path and returns a tuple
+        """
+        resp = self.get(path, debug)
+        return resp, BeautifulSoup(resp.content, features="lxml")
+
+    def get_json(self, path):
+        resp = self.get(path)
+        return resp, resp.json()
+
+    def get_csrf_token(self, last=False):
+        """Get a csrf_token from the home page or read from the cookie jar
+        based on the last response
+        """
+        if not last:
+            self.get('/')
+        return self._session.cookies.get("csrftoken")
 
 
 def get_web_page(url, username=None, password=None, login_url=None):
@@ -41,9 +216,9 @@ def get_web_page(url, username=None, password=None, login_url=None):
 
     if login_url:
         # Login via a form
-        cookies = urllib2.HTTPCookieProcessor()
-        opener = urllib2.build_opener(cookies)
-        urllib2.install_opener(opener)
+        cookies = HTTPCookieProcessor()
+        opener = build_opener(cookies)
+        install_opener(opener)
 
         opener.open(login_url)
 
@@ -57,31 +232,30 @@ def get_web_page(url, username=None, password=None, login_url=None):
                       this_is_the_login_form=True,
                       csrfmiddlewaretoken=token,
                       )
-        encoded_params = urllib.urlencode(params)
+        encoded_params = urlencode(params)
 
         with contextlib.closing(opener.open(login_url, encoded_params)) as f:
             f.read()
-
     elif username is not None:
         # Login using basic auth
 
         # Create password manager
-        passman = urllib2.HTTPPasswordMgrWithDefaultRealm()
+        passman = HTTPPasswordMgrWithDefaultRealm()
         passman.add_password(None, url, username, password)
 
         # create the handler
-        authhandler = urllib2.HTTPBasicAuthHandler(passman)
-        opener = urllib2.build_opener(authhandler)
-        urllib2.install_opener(opener)
+        authhandler = HTTPBasicAuthHandler(passman)
+        opener = build_opener(authhandler)
+        install_opener(opener)
 
     try:
-        pagehandle = urllib2.urlopen(url)
-    except urllib2.HTTPError as e:
+        pagehandle = urlopen(url)
+    except HTTPError as e:
         msg = ('The server couldn\'t fulfill the request. '
-               'Error code: %s' % e.code)
+               'Error code: %s' % e.status_code)
         e.args = (msg,)
         raise
-    except urllib2.URLError as e:
+    except URLError as e:
         msg = 'Could not open URL "%s": %s' % (url, e)
         e.args = (msg,)
         raise
@@ -100,9 +274,10 @@ def check_layer(uploaded):
     assert len(uploaded.name) > 0, msg
 
 
-class TestSetAttributes(TestCase):
+class TestSetAttributes(GeoNodeBaseTestSupport):
 
     def setUp(self):
+        super(TestSetAttributes, self).setUp()
         # Load users to log in as
         call_command('loaddata', 'people_data', verbosity=0)
 
@@ -119,7 +294,7 @@ class TestSetAttributes(TestCase):
         disconnected_post_save = signals.post_save.disconnect(geoserver_post_save, sender=Layer)
 
         # Create dummy layer to attach attributes to
-        l = Layer.objects.create(
+        _l = Layer.objects.create(
             name='dummy_layer',
             bbox_x0=-180,
             bbox_x1=180,
@@ -142,24 +317,23 @@ class TestSetAttributes(TestCase):
         expected_results = copy.deepcopy(attribute_map)
 
         # set attributes for resource
-        set_attributes(l, attribute_map)
+        set_attributes(_l, attribute_map)
 
         # 2 items in attribute_map should translate into 2 Attribute instances
-        self.assertEquals(l.attributes.count(), len(expected_results))
+        self.assertEqual(_l.attributes.count(), len(expected_results))
 
         # The name and type should be set as provided by attribute map
-        for a in l.attributes:
+        for a in _l.attributes:
             self.assertIn([a.attribute, a.attribute_type], expected_results)
 
 
 if has_notifications:
-    import pickle
-    import base64
     from pinax.notifications.tests import get_backend_id
     from pinax.notifications.engine import send_all
     from pinax.notifications.models import NoticeQueueBatch
 
-    class NotificationsTestsHelper(TestCase):
+    class NotificationsTestsHelper(GeoNodeBaseTestSupport):
+
         """
         Helper class for notification tests
         This provides:

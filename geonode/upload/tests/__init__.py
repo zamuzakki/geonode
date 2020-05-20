@@ -18,14 +18,15 @@
 #
 #########################################################################
 
+from geonode.tests.base import GeoNodeBaseTestSupport
+
 import contextlib
 import os
 import shutil
 import tempfile
 import zipfile
 import geonode.upload.files as files
-# from unittest import TestCase
-from django.test import LiveServerTestCase as TestCase
+
 from geonode.upload.files import SpatialFiles, scan_file
 from geonode.upload.files import _rename_files, _contains_bad_names
 
@@ -45,7 +46,7 @@ def create_files(names, zipped=False):
             except IOError:
                 # windows fails at writing special characters
                 # need to do something better here
-                print "Test does not work in Windows"
+                print("Test does not work in Windows")
     if zipped:
         basefile = os.path.join(tmpdir, 'files.zip')
         zf = zipfile.ZipFile(basefile, 'w')
@@ -59,7 +60,7 @@ def create_files(names, zipped=False):
     shutil.rmtree(tmpdir)
 
 
-class FilesTests(TestCase):
+class FilesTests(GeoNodeBaseTestSupport):
 
     def test_types(self):
         for t in files.types:
@@ -91,8 +92,8 @@ class FilesTests(TestCase):
         """
         exts = ('.shp', '.shx', '.sld', '.xml', '.prj', '.dbf')
 
-        with create_files(map(lambda s: 'san_andres_y_providencia_location{0}'.format(s), exts)) as tests:
-            shp = filter(lambda s: s.endswith('.shp'), tests)[0]
+        with create_files(['san_andres_y_providencia_location{0}'.format(s) for s in exts]) as tests:
+            shp = [s for s in tests if s.endswith('.shp')][0]
             spatial_files = scan_file(shp)
             self.assertTrue(isinstance(spatial_files, SpatialFiles))
 
@@ -102,10 +103,10 @@ class FilesTests(TestCase):
             self.assertEqual(len(spatial_file.auxillary_files), 3)
             self.assertEqual(len(spatial_file.xml_files), 1)
             self.assertTrue(
-                all(map(lambda s: s.endswith('xml'), spatial_file.xml_files)))
+                all(s.endswith('xml') for s in spatial_file.xml_files))
             self.assertEqual(len(spatial_file.sld_files), 1)
             self.assertTrue(
-                all(map(lambda s: s.endswith('sld'), spatial_file.sld_files)))
+                all(s.endswith('sld') for s in spatial_file.sld_files))
 
         # Test the scan_file function with a zipped spatial file that needs to
         # be renamed.
@@ -121,15 +122,27 @@ class FilesTests(TestCase):
             self.assertEqual(len(spatial_file.xml_files), 1)
             self.assertEqual(len(spatial_file.sld_files), 1)
             self.assertTrue(
-                all(map(lambda s: s.endswith('xml'), spatial_file.xml_files)))
+                all(s.endswith('xml') for s in spatial_file.xml_files))
 
             basedir = os.path.dirname(spatial_file.base_file)
             for f in file_names:
                 path = os.path.join(basedir, '_%s' % f)
                 self.assertTrue(os.path.exists(path))
 
+        # Test the scan_file function with a raster spatial file takes SLD also.
+        file_names = ['109029_24.tif', '109029_24.sld']
+        with create_files(file_names) as tests:
+            spatial_files = scan_file(tests[0])
+            self.assertTrue(isinstance(spatial_files, SpatialFiles))
 
-class TimeFormFormTest(TestCase):
+            spatial_file = spatial_files[0]
+            self.assertTrue(spatial_file.file_type.matches('tif'))
+            self.assertEqual(len(spatial_file.auxillary_files), 0)
+            self.assertEqual(len(spatial_file.xml_files), 0)
+            self.assertEqual(len(spatial_file.sld_files), 1)
+
+
+class TimeFormFormTest(GeoNodeBaseTestSupport):
 
     def _form(self, data):
         # prevent circular deps error - not sure why this module was getting
@@ -151,7 +164,10 @@ class TimeFormFormTest(TestCase):
             self.assertEqual(end, form.cleaned_data['end_attribute'])
 
     def test_invalid_form(self):
-        form = self._form(dict(time_attribute='start_date', text_attribute='start_text'))
+        form = self._form(
+            dict(
+                time_attribute='start_date',
+                text_attribute='start_text'))
         self.assertTrue(not form.is_valid())
 
     def test_start_end_attribute_and_type(self):

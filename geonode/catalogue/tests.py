@@ -18,14 +18,20 @@
 #
 #########################################################################
 
+from geonode.tests.base import GeoNodeBaseTestSupport
+
 import json
-from django.core.urlresolvers import reverse
-from django.test import TestCase
-from geonode.base.models import ResourceBase
+from django.urls import reverse
+from geonode.compat import ensure_string
 from geonode.catalogue import get_catalogue
+from geonode.base.models import ResourceBase
 
 
-class CatalogueTest(TestCase):
+class CatalogueTest(GeoNodeBaseTestSupport):
+
+    def setUp(self):
+        super(CatalogueTest, self).setUp()
+
     def test_get_catalog(self):
         """Tests the get_catalogue function works."""
 
@@ -35,26 +41,27 @@ class CatalogueTest(TestCase):
         """Test that the data.json representation behaves correctly"""
 
         response = self.client.get(reverse('data_json')).content
-        data_json = json.loads(response)
+        data_json = json.loads(ensure_string(response))
 
         len1 = len(ResourceBase.objects.all())
         len2 = len(data_json)
-        self.assertEquals(len1, len2,
-                          'Expected equality of json and repository lengths')
+        self.assertEqual(len1, len2, 'Expected equality of json and repository lengths')
 
         record_keys = [
-            'accessLevel',
-            'contactPoint',
+            'publisher',
+            'title',
             'description',
+            'mbox',
+            'keyword',
+            'modified',
+            'contactPoint',
+            'accessLevel',
             'distribution',
             'identifier',
-            'keyword',
-            'mbox',
-            'modified',
-            'publisher',
-            'title'
         ]
 
         for record in data_json:
-            self.assertEquals(record_keys, record.keys(),
-                              'Expected specific list of fields to output')
+            self.assertEqual(
+                sorted(record_keys),
+                sorted(list(record.keys())),
+                'Expected specific list of fields to output')

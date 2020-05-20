@@ -20,7 +20,7 @@
 
 from django import template
 
-from agon_ratings.models import Rating
+from pinax.ratings.models import Rating
 from django.db.models import Q
 from django.contrib.contenttypes.models import ContentType
 from django.contrib.auth import get_user_model
@@ -33,8 +33,11 @@ from geonode.layers.models import Layer
 from geonode.maps.models import Map
 from geonode.documents.models import Document
 from geonode.groups.models import GroupProfile
-from geonode.base.models import HierarchicalKeyword
+from geonode.base.models import (
+    HierarchicalKeyword, Menu, MenuItem
+)
 from geonode.security.utils import get_visible_resources
+from collections import OrderedDict
 
 register = template.Library()
 
@@ -47,13 +50,13 @@ FACETS = {
 }
 
 
-@register.assignment_tag
+@register.simple_tag
 def num_ratings(obj):
     ct = ContentType.objects.get_for_model(obj)
     return len(Rating.objects.filter(object_id=obj.pk, content_type=ct))
 
 
-@register.assignment_tag(takes_context=True)
+@register.simple_tag(takes_context=True)
 def facets(context):
     request = context['request']
     title_filter = request.GET.get('title__icontains', '')
@@ -69,22 +72,21 @@ def facets(context):
     facet_type = context['facet_type'] if 'facet_type' in context else 'all'
 
     if not settings.SKIP_PERMS_FILTER:
-        authorized = get_objects_for_user(
-            request.user, 'base.view_resourcebase').values('id')
+        authorized = []
+        try:
+            authorized = get_objects_for_user(
+                request.user, 'base.view_resourcebase').values('id')
+        except Exception:
+            pass
 
     if facet_type == 'documents':
-
         documents = Document.objects.filter(title__icontains=title_filter)
-
         if category_filter:
             documents = documents.filter(category__identifier__in=category_filter)
-
         if regions_filter:
             documents = documents.filter(regions__name__in=regions_filter)
-
         if owner_filter:
             documents = documents.filter(owner__username__in=owner_filter)
-
         if date_gte_filter:
             documents = documents.filter(date__gte=date_gte_filter)
         if date_lte_filter:
@@ -106,7 +108,7 @@ def facets(context):
                     kws = HierarchicalKeyword.objects.filter(name__iexact=keyword)
                     for kw in kws:
                         treeqs = treeqs | HierarchicalKeyword.get_tree(kw)
-                except:
+                except Exception:
                     # Ignore keywords not actually used?
                     pass
 
@@ -119,20 +121,14 @@ def facets(context):
         facets = dict([(count['doc_type'], count['count']) for count in counts])
 
         return facets
-
     else:
-
         layers = Layer.objects.filter(title__icontains=title_filter)
-
         if category_filter:
             layers = layers.filter(category__identifier__in=category_filter)
-
         if regions_filter:
             layers = layers.filter(regions__name__in=regions_filter)
-
         if owner_filter:
             layers = layers.filter(owner__username__in=owner_filter)
-
         if date_gte_filter:
             layers = layers.filter(date__gte=date_gte_filter)
         if date_lte_filter:
@@ -148,11 +144,20 @@ def facets(context):
             private_groups_not_visibile=settings.GROUP_PRIVATE_RESOURCES)
 
         if extent_filter:
-            bbox = extent_filter.split(
-                ',')  # TODO: Why is this different when done through haystack?
-            bbox = map(str, bbox)  # 2.6 compat - float to decimal conversion
-            intersects = ~(Q(bbox_x0__gt=bbox[2]) | Q(bbox_x1__lt=bbox[0]) |
-                           Q(bbox_y0__gt=bbox[3]) | Q(bbox_y1__lt=bbox[1]))
+            from geonode.utils import bbox_to_projection
+            bbox = extent_filter.split(',')
+            bbox = list(map(str, bbox))
+
+            intersects = (Q(bbox_x0__gt=bbox[0]) & Q(bbox_x1__lt=bbox[2]) &
+                          Q(bbox_y0__gt=bbox[1]) & Q(bbox_y1__lt=bbox[3]))
+
+            for proj in Layer.objects.order_by('srid').values('srid').distinct():
+                if proj['srid'] != 'EPSG:4326':
+                    proj_bbox = bbox_to_projection(bbox + ['4326', ],
+                                                   target_srid=int(proj['srid'][5:]))
+                    if proj_bbox[-1] != 4326:
+                        intersects = intersects | (Q(bbox_x0__gt=proj_bbox[0]) & Q(bbox_x1__lt=proj_bbox[2]) & Q(
+                            bbox_y0__gt=proj_bbox[1]) & Q(bbox_y1__lt=proj_bbox[3]))
 
             layers = layers.filter(intersects)
 
@@ -163,7 +168,7 @@ def facets(context):
                     kws = HierarchicalKeyword.objects.filter(name__iexact=keyword)
                     for kw in kws:
                         treeqs = treeqs | HierarchicalKeyword.get_tree(kw)
-                except:
+                except Exception:
                     # Ignore keywords not actually used?
                     pass
 
@@ -173,7 +178,15 @@ def facets(context):
             layers = layers.filter(id__in=authorized)
 
         counts = layers.values('storeType').annotate(count=Count('storeType'))
-        count_dict = dict([(count['storeType'], count['count']) for count in counts])
+
+        counts_array = []
+        try:
+            for count in counts:
+                counts_array.append((count['storeType'], count['count']))
+        except Exception:
+            pass
+
+        count_dict = dict(counts_array)
 
         vector_time_series = layers.exclude(has_time=False).filter(storeType='dataStore'). \
             values('storeType').annotate(count=Count('storeType'))
@@ -199,15 +212,12 @@ def facets(context):
         if category_filter:
             maps = maps.filter(category__identifier__in=category_filter)
             documents = documents.filter(category__identifier__in=category_filter)
-
         if regions_filter:
             maps = maps.filter(regions__name__in=regions_filter)
             documents = documents.filter(regions__name__in=regions_filter)
-
         if owner_filter:
             maps = maps.filter(owner__username__in=owner_filter)
             documents = documents.filter(owner__username__in=owner_filter)
-
         if date_gte_filter:
             maps = maps.filter(date__gte=date_gte_filter)
             documents = documents.filter(date__gte=date_gte_filter)
@@ -248,7 +258,7 @@ def facets(context):
                     kws = HierarchicalKeyword.objects.filter(name__iexact=keyword)
                     for kw in kws:
                         treeqs = treeqs | HierarchicalKeyword.get_tree(kw)
-                except:
+                except Exception:
                     # Ignore keywords not actually used?
                     pass
 
@@ -269,8 +279,7 @@ def facets(context):
             facets['group'] = GroupProfile.objects.exclude(
                 access="private").count()
 
-            facets['layer'] = facets['raster'] + \
-                facets['vector'] + facets['remote'] + facets['wms']  # + facets['vector_time']
+            facets['layer'] = facets['raster'] + facets['vector'] + facets['remote'] + facets['wms']
 
     return facets
 
@@ -283,17 +292,17 @@ def get_facet_title(value):
     return value
 
 
-@register.assignment_tag(takes_context=True)
+@register.simple_tag(takes_context=True)
 def get_current_path(context):
     request = context['request']
     return request.get_full_path()
 
 
-@register.assignment_tag(takes_context=True)
+@register.simple_tag(takes_context=True)
 def get_context_resourcetype(context):
     c_path = get_current_path(context)
     resource_types = ['layers', 'maps', 'documents', 'search', 'people',
-                      'groups']
+                      'groups/categories', 'groups']
     for resource_type in resource_types:
         if "/{0}/".format(resource_type) in c_path:
             return resource_type
@@ -306,3 +315,37 @@ def fullurl(context, url):
         return ''
     r = context['request']
     return r.build_absolute_uri(url)
+
+
+@register.simple_tag
+def get_menu(placeholder_name):
+    menus = {
+        m: MenuItem.objects.filter(menu=m).order_by('order')
+        for m in Menu.objects.filter(placeholder__name=placeholder_name)
+    }
+    return OrderedDict(menus.items())
+
+
+@register.inclusion_tag(filename='base/menu.html')
+def render_nav_menu(placeholder_name):
+    menus = {}
+    try:
+        menus = {
+            m: MenuItem.objects.filter(menu=m).order_by('order')
+            for m in Menu.objects.filter(placeholder__name=placeholder_name)
+        }
+    except Exception:
+        pass
+
+    return {'menus': OrderedDict(menus.items())}
+
+
+@register.simple_tag
+def display_edit_request_button(resource, user, perms):
+    def _has_owner_his_permissions():
+        return (set(resource.BASE_PERMISSIONS.get('owner') + resource.BASE_PERMISSIONS.get('write')) - set(
+            perms)) == set()
+
+    if not _has_owner_his_permissions() and resource.owner.pk == user.pk:
+        return True
+    return False

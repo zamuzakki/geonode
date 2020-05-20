@@ -21,7 +21,7 @@
         {{ bullet }}<br/><br/>
       {% endfor %}
       {% if resource.license.url %}
-        + For more info see <a href="{{ resource.license.url }}">{{ resource.license.url }}</a>.
+        + {% trans "For more info see" %} <a href="{{ resource.license.url }}">{{ resource.license.url }}</a>.
       {% endif %}
     </dd>
 
@@ -46,16 +46,31 @@
     <dd>{{ resource.display_type }}</dd>
     {% endif %}
 
-    {% if resource.keywords.count > 0 %}
+    {% if resource.keywords.count > 0 or resource.tkeywords.count > 0 %}
     <dt>{% trans "Keywords" %}</dt>
-    <dd itemprop="keywords">
+      <dd itemprop="keywords">
       {% for keyword in resource.keywords.all %}
-  <a itemscope itemtype="http://schema.org/Text" href="{% url "search" %}?keywords__slug__in={{ keyword.slug }}" >
+        <a itemscope itemtype="http://schema.org/Text" href="{% url "search" %}?keywords__slug__in={{ keyword.slug }}" >
           {{ keyword.name }}
         </a>
         {% if not forloop.last %},{% endif %}
       {% endfor %}
-    </dd>
+      {% if THESAURI_FILTERS %}
+        {% if resource.tkeywords.count > 0 %}
+          {% get_current_language as LANGUAGE_CODE %}
+          {% for keyword in resource.tkeywords.all %}
+            <a itemscope itemtype="http://schema.org/Text" href="{% url "search" %}?tkeywords__id__in={{ keyword.id }}">
+              {% for label in keyword.labels %}
+                {% if forloop.first %},{% endif %}
+                {% if label.lang == LANGUAGE_CODE %}
+                  {{ label }}
+                {% endif %}
+              {% endfor %}
+            </a>
+          {% endfor %}
+        {% endif %}
+      {% endif %}
+      </dd>
     {% endif %}
 
     {% if resource.category %}
@@ -81,7 +96,7 @@
     {% endif %}
 
     {% if resource.owner %}
-    <dt>{% trans "Owner" %}</dt>
+    <dt>{% trans "Responsible" %}</dt>
     <dd><a itemprop="author" href="{{ resource.owner.get_absolute_url }}">{{ resource.owner.username }}</a></dd>
     {% endif %}
 
@@ -93,6 +108,11 @@
     {% if resource.group %}
     <dt>{% trans "Group" %}</dt>
     <dd><a href="/groups/group/{{ resource.group.name }}/activity/">{{ group }}</a> </dd>
+    {% endif %}
+
+    {% if resource.doi %}
+    <dt>{% trans "DOI" %}</dt>
+    <dd>{{ resource.doi }}</dd>
     {% endif %}
 
   </dl>
@@ -118,7 +138,7 @@
           {{ bullet }}<br/><br/>
         {% endfor %}
         {% if resource.license.url %}
-          + For more info see <a href="{{ resource.license.url }}">{{ resource.license.url }}</a>.
+          + {% trans "For more info see" %} <a href="{{ resource.license.url }}">{{ resource.license.url }}</a>.
         {% endif %}
       </dd>
     {% endif %}

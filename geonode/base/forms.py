@@ -18,21 +18,28 @@
 #
 #########################################################################
 
-from fields import MultiThesauriField
-from widgets import MultiThesauriWidget
+import logging
 
-from autocomplete_light.widgets import ChoiceWidget
-from autocomplete_light.contrib.taggit_field import TaggitField, TaggitWidget
+from .fields import MultiThesauriField
+
+from dal import autocomplete
+from taggit.forms import TagField
+
+import six
 
 from django import forms
+from django.conf import settings
+from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Group
 from django.core import validators
+from django.db.models import Prefetch, Q
 from django.forms import models
+from django.forms import ModelForm
 from django.forms.fields import ChoiceField
 from django.forms.utils import flatatt
 from django.utils.html import format_html
 from django.utils.safestring import mark_safe
 from django.utils.translation import ugettext as _
-from django.db.models import Q
 
 from django.utils.encoding import (
     force_text,
@@ -41,11 +48,14 @@ from django.utils.encoding import (
 from bootstrap3_datetime.widgets import DateTimePicker
 from modeltranslation.forms import TranslationModelForm
 
-from geonode.base.models import TopicCategory, Region, License
-from geonode.people.models import Profile
+from geonode.base.models import HierarchicalKeyword, TopicCategory, Region, License, CuratedThumbnail, \
+    ResourceBase
+from geonode.base.models import ThesaurusKeyword, ThesaurusKeywordLabel
+from geonode.documents.models import Document
 from geonode.base.enumerations import ALL_LANGUAGES
-from django.contrib.auth.models import Group
-from django.contrib.auth import get_user_model
+from geonode.base.widgets import TaggitSelect2Custom
+
+logger = logging.getLogger(__name__)
 
 
 def get_tree_data():
@@ -74,7 +84,7 @@ def get_tree_data():
                 data.append(
                     tuple((toplevel.name, childrens))
                 )
-    except BaseException:
+    except Exception:
         pass
 
     return tuple(data)
@@ -99,34 +109,36 @@ class CategoryChoiceField(forms.ModelChoiceField):
 
     def label_from_instance(self, obj):
         return '<i class="fa ' + obj.fa_class + ' fa-2x unchecked"></i>' \
-               '<i class="fa ' + obj.fa_class + ' fa-2x checked"></i>' \
-               '<span class="has-popover" data-container="body" data-toggle="popover" data-placement="top" ' \
-               'data-content="' + obj.description + '" trigger="hover">' \
-               '<br/><strong>' + obj.gn_description + '</strong></span>'
+                         '<i class="fa ' + obj.fa_class + ' fa-2x checked"></i>' \
+                         '<span class="has-popover" data-container="body" data-toggle="popover" data-placement="top" ' \
+                         'data-content="' + obj.description + '" trigger="hover">' \
+                                                              '<br/><strong>' + obj.gn_description + '</strong></span>'
 
 
-class TreeWidget(TaggitWidget):
-    input_type = 'text'
+# NOTE: This is commented as it needs updating to work with select2 and autocomlete light.
+#
+# class TreeWidget(autocomplete.TaggitSelect2):
+#     input_type = 'text'
 
-    def render(self, name, values, attrs=None):
-        if isinstance(values, basestring):
-            vals = values
-        elif values:
-            vals = ','.join([str(i.tag.name) for i in values])
-        else:
-            vals = ""
-        output = ["""<div class="keywords-container"><span class="input-group">
-                <input class='form-control'
-                       id='id_resource-keywords'
-                       name='resource-keywords'
-                       value='%s'><br/>""" % (vals)]
-        output.append(
-            '<div id="treeview" class="" style="display: none"></div>')
-        output.append(
-            '<span class="input-group-addon" id="treeview-toggle"><i class="fa fa-folder"></i></span>')
-        output.append('</span></div>')
+#     def render(self, name, value, attrs=None):
+#         if isinstance(value, basestring):
+#             vals = value
+#         elif value:
+#             vals = ','.join([i.tag.name for i in value])
+#         else:
+#             vals = ""
+#         output = ["""<div class="keywords-container"><span class="input-group">
+#                 <input class="form-control"
+#                        id="id_resource-keywords"
+#                        name="resource-keywords"
+#                        value="%s"><br/>""" % (vals)]
+#         output.append(
+#             '<div id="treeview" class="" style="display: none"></div>')
+#         output.append(
+#             '<span class="input-group-addon" id="treeview-toggle"><i class="fa fa-folder"></i></span>')
+#         output.append('</span></div>')
 
-        return mark_safe(u'\n'.join(output))
+#         return mark_safe(u'\n'.join(output))
 
 
 class RegionsMultipleChoiceField(forms.MultipleChoiceField):
@@ -143,10 +155,11 @@ class RegionsMultipleChoiceField(forms.MultipleChoiceField):
 class RegionsSelect(forms.Select):
     allow_multiple_selected = True
 
-    def render(self, name, value, attrs=None):
+    def render(self, name, value, attrs=None, renderer=None):
         if value is None:
             value = []
-        final_attrs = self.build_attrs(attrs, name=name)
+        final_attrs = self.build_attrs(attrs)
+        final_attrs["name"] = name
         output = [
             format_html(
                 '<select multiple="multiple"{}>',
@@ -200,15 +213,23 @@ class RegionsSelect(forms.Select):
             label)
 
     def render_options(self, selected_choices):
+
         # Normalize to strings.
-        selected_choices = set(force_text(v) for v in selected_choices)
+        def _region_id_from_choice(choice):
+            if isinstance(choice, int) or \
+                    (isinstance(choice, six.string_types) and choice.isdigit()):
+                return int(choice)
+            else:
+                return choice.id
+
+        selected_choices = set(force_text(_region_id_from_choice(v)) for v in selected_choices)
         output = []
 
         output.append(format_html('<optgroup label="{}">', 'Global'))
         for option_value, option_label in self.choices:
             if not isinstance(
                     option_label, (list, tuple)) and isinstance(
-                    option_label, basestring):
+                        option_label, six.string_types):
                 output.append(
                     self.render_option_value(
                         selected_choices,
@@ -219,7 +240,7 @@ class RegionsSelect(forms.Select):
         for option_value, option_label in self.choices:
             if isinstance(
                     option_label, (list, tuple)) and not isinstance(
-                    option_label, basestring):
+                        option_label, six.string_types):
                 output.append(
                     format_html(
                         '<optgroup label="{}">',
@@ -227,10 +248,10 @@ class RegionsSelect(forms.Select):
                 for option in option_label:
                     if isinstance(
                             option, (list, tuple)) and not isinstance(
-                            option, basestring):
+                                option, six.string_types):
                         if isinstance(
                                 option[1][0], (list, tuple)) and not isinstance(
-                                option[1][0], basestring):
+                                    option[1][0], six.string_types):
                             for option_child in option[1][0]:
                                 output.append(
                                     self.render_option_value(
@@ -262,14 +283,14 @@ class CategoryForm(forms.Form):
         label='*' + _('Category'),
         empty_label=None,
         queryset=TopicCategory.objects.filter(
-            is_choice=True) .extra(
+            is_choice=True).extra(
             order_by=['description']))
 
     def clean(self):
         cleaned_data = self.data
         ccf_data = cleaned_data.get("category_choice_field")
-
-        if not ccf_data:
+        category_mandatory = getattr(settings, 'TOPICCATEGORY_MANDATORY', False)
+        if category_mandatory and not ccf_data:
             msg = _("Category is required.")
             self._errors = self.error_class([msg])
 
@@ -277,23 +298,24 @@ class CategoryForm(forms.Form):
         return cleaned_data
 
 
-class TKeywordForm(forms.Form):
+class TKeywordForm(forms.ModelForm):
+    prefix = 'tkeywords'
+
+    class Meta:
+        model = Document
+        fields = ['tkeywords']
+
     tkeywords = MultiThesauriField(
-        label=_("Keywords from Thesauri"),
+        queryset=ThesaurusKeyword.objects.prefetch_related(
+            Prefetch('keyword', queryset=ThesaurusKeywordLabel.objects.filter(lang='en'))
+        ),
+        widget=autocomplete.ModelSelect2Multiple(
+            url='thesaurus_autocomplete',
+        ),
+        label=_("Keywords from Thesaurus"),
         required=False,
-        help_text=_("List of keywords from Thesauri"),
-        widget=MultiThesauriWidget())
-
-    def clean(self):
-        cleaned_data = None
-        if self.data:
-            try:
-                cleaned_data = [{key: self.data.getlist(key)} for key, value in self.data.items(
-                ) if 'tkeywords-tkeywords' in key.lower() and 'autocomplete' not in key.lower()]
-            except BaseException:
-                pass
-
-        return cleaned_data
+        help_text=_("List of keywords from Thesaurus", ),
+    )
 
 
 class ResourceBaseDateTimePicker(DateTimePicker):
@@ -303,7 +325,7 @@ class ResourceBaseDateTimePicker(DateTimePicker):
         if extra_attrs:
             base_attrs.update(extra_attrs)
         base_attrs.update(kwargs)
-        return super(ResourceBaseDateTimePicker, self).build_attrs(**base_attrs)
+        return super(ResourceBaseDateTimePicker, self).build_attrs(base_attrs)
         # return base_attrs
 
 
@@ -314,9 +336,8 @@ class ResourceBaseForm(TranslationModelForm):
         empty_label="Owner",
         label=_("Owner"),
         required=False,
-        queryset=Profile.objects.exclude(
-            username='AnonymousUser'),
-        widget=ChoiceWidget('ProfileAutocomplete'))
+        queryset=get_user_model().objects.exclude(username='AnonymousUser'),
+        widget=autocomplete.ModelSelect2(url='autocomplete_profile'))
 
     date = forms.DateTimeField(
         label=_("Date"),
@@ -343,24 +364,24 @@ class ResourceBaseForm(TranslationModelForm):
         empty_label=_("Person outside GeoNode (fill form)"),
         label=_("Point of Contact"),
         required=False,
-        queryset=Profile.objects.exclude(
+        queryset=get_user_model().objects.exclude(
             username='AnonymousUser'),
-        widget=ChoiceWidget('ProfileAutocomplete'))
+        widget=autocomplete.ModelSelect2(url='autocomplete_profile'))
 
     metadata_author = forms.ModelChoiceField(
         empty_label=_("Person outside GeoNode (fill form)"),
         label=_("Metadata Author"),
         required=False,
-        queryset=Profile.objects.exclude(
+        queryset=get_user_model().objects.exclude(
             username='AnonymousUser'),
-        widget=ChoiceWidget('ProfileAutocomplete'))
+        widget=autocomplete.ModelSelect2(url='autocomplete_profile'))
 
-    keywords = TaggitField(
+    keywords = TagField(
         label=_("Free-text Keywords"),
         required=False,
         help_text=_("A space or comma-separated list of keywords. Use the widget to select from Hierarchical tree."),
-        widget=TreeWidget(
-            autocomplete='HierarchicalKeywordAutocomplete'))
+        # widget=TreeWidget(url='autocomplete_hierachical_keyword'), #Needs updating to work with select2
+        widget=TaggitSelect2Custom(url='autocomplete_hierachical_keyword'))
 
     """
     regions = TreeNodeMultipleChoiceField(
@@ -374,13 +395,13 @@ class ResourceBaseForm(TranslationModelForm):
         required=False,
         choices=get_tree_data(),
         widget=RegionsSelect)
+
     regions.widget.attrs = {"size": 20}
 
     def __init__(self, *args, **kwargs):
         super(ResourceBaseForm, self).__init__(*args, **kwargs)
         for field in self.fields:
             help_text = self.fields[field].help_text
-            self.fields[field].help_text = None
             if help_text != '':
                 self.fields[field].widget.attrs.update(
                     {
@@ -391,17 +412,45 @@ class ResourceBaseForm(TranslationModelForm):
                         'data-html': 'true'})
 
     def clean_keywords(self):
-        import urllib
+        from urllib.parse import unquote
+        from html.entities import codepoint2name
+
+        def unicode_escape(unistr):
+            """
+            Tidys up unicode entities into HTML friendly entities
+            Takes a unicode string as an argument
+            Returns a unicode string
+            """
+            escaped = ""
+            for char in unistr:
+                if ord(char) in codepoint2name:
+                    name = codepoint2name.get(ord(char))
+                    escaped += '&%s;' % name if 'nbsp' not in name else ' '
+                else:
+                    escaped += char
+            return escaped
 
         keywords = self.cleaned_data['keywords']
         _unsescaped_kwds = []
         for k in keywords:
-            _k = urllib.unquote(k.decode('utf-8')).decode('utf-8').split(",")
-            if not isinstance(_k, basestring):
+            _k = unquote(('%s' % k)).split(",")
+            if not isinstance(_k, six.string_types):
                 for _kk in [x.strip() for x in _k]:
-                    _unsescaped_kwds.append(_kk)
+                    # Simulate JS Unescape
+                    _kk = _kk.replace('%u', r'\u').encode('unicode-escape').replace(
+                        b'\\\\u',
+                        b'\\u').decode('unicode-escape') if '%u' in _kk else _kk
+                    _hk = HierarchicalKeyword.objects.filter(name__iexact='%s' % _kk.strip())
+                    if _hk and len(_hk) > 0:
+                        _unsescaped_kwds.append(str(_hk[0]))
+                    else:
+                        _unsescaped_kwds.append(str(_kk))
             else:
-                _unsescaped_kwds.append(_k)
+                _hk = HierarchicalKeyword.objects.filter(name__iexact=_k.strip())
+                if _hk and len(_hk) > 0:
+                    _unsescaped_kwds.append(str(_hk[0]))
+                else:
+                    _unsescaped_kwds.append(str(_k))
         return _unsescaped_kwds
 
     class Meta:
@@ -428,7 +477,8 @@ class ResourceBaseForm(TranslationModelForm):
             'thumbnail',
             'charset',
             'rating',
-            'detail_url'
+            'detail_url',
+            'tkeywords',
         )
 
 
@@ -472,3 +522,44 @@ class BatchEditForm(forms.Form):
         choices=LANGUAGES,
     )
     keywords = forms.CharField(required=False)
+
+
+class BatchPermissionsForm(forms.Form):
+    group = forms.ModelChoiceField(
+        queryset=Group.objects.all(),
+        required=False)
+    user = forms.ModelChoiceField(
+        queryset=get_user_model().objects.all(),
+        required=False)
+    permission_type = forms.MultipleChoiceField(
+        required=True,
+        widget=forms.CheckboxSelectMultiple,
+        choices=(
+            ('r', 'Read'),
+            ('w', 'Write'),
+            ('d', 'Download'),
+        ),
+    )
+    mode = forms.ChoiceField(
+        required=True,
+        widget=forms.RadioSelect,
+        choices=(
+            ('set', 'Set'),
+            ('unset', 'Unset'),
+        ),
+    )
+
+
+class CuratedThumbnailForm(ModelForm):
+    class Meta:
+        model = CuratedThumbnail
+        fields = ['img']
+
+
+class OwnerRightsRequestForm(forms.Form):
+    resource = forms.ModelChoiceField(queryset=ResourceBase.objects.all(),
+                                      widget=forms.HiddenInput())
+    reason = forms.CharField(widget=forms.Textarea, help_text=_('Short reasoning behind the request'), required=True)
+
+    class Meta:
+        fields = ['reason', 'resource']

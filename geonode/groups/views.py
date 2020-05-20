@@ -23,19 +23,27 @@ import logging
 from actstream.models import Action
 from django.contrib.auth import get_user_model
 from django.contrib.auth.decorators import login_required
-from django.core.urlresolvers import reverse
-from django.http import Http404
-from django.http import HttpResponseForbidden
-from django.http import HttpResponseNotAllowed
-from django.http import HttpResponseRedirect
-from django.shortcuts import get_object_or_404
-from django.shortcuts import redirect
-from django.shortcuts import render
+from django.urls import reverse
+from django.http import (
+    Http404,
+    HttpResponseForbidden,
+    HttpResponseNotAllowed,
+    HttpResponseRedirect)
+from django.contrib import messages
+from django.shortcuts import (
+    get_object_or_404,
+    redirect,
+    render)
 from django.views.decorators.http import require_POST
-from django.views.generic import ListView
-from django.views.generic import CreateView
+from django.views.generic import ListView, CreateView
 from django.views.generic.edit import UpdateView
 from django.views.generic.detail import DetailView
+from django.db.models import Q
+
+from geonode.decorators import view_decorator, superuser_only
+from geonode.base.views import SimpleSelect2View
+
+from dal import autocomplete
 
 from . import forms
 from . import models
@@ -44,6 +52,7 @@ from .models import GroupMember
 logger = logging.getLogger(__name__)
 
 
+@view_decorator(superuser_only, subclass=True)
 class GroupCategoryCreateView(CreateView):
     model = models.GroupCategory
     fields = ['name', 'description']
@@ -58,12 +67,13 @@ class GroupCategoryUpdateView(UpdateView):
     fields = ['name', 'description']
     template_name_suffix = '_update_form'
 
+
 group_category_create = GroupCategoryCreateView.as_view()
 group_category_detail = GroupCategoryDetailView.as_view()
 group_category_update = GroupCategoryUpdateView.as_view()
 
 
-@login_required
+@superuser_only
 def group_create(request):
     if request.method == "POST":
         form = forms.GroupForm(request.POST, request.FILES)
@@ -111,7 +121,6 @@ def group_update(request, slug):
 
 
 class GroupDetailView(ListView):
-
     """
     Mixes a detail view (the group) with a ListView (the members).
     """
@@ -134,6 +143,7 @@ class GroupDetailView(ListView):
         context['object'] = self.group
         context['maps'] = self.group.resources(resource_type='map')
         context['layers'] = self.group.resources(resource_type='layer')
+        context['documents'] = self.group.resources(resource_type='document')
         context['is_member'] = self.group.user_is_member(self.request.user)
         context['is_manager'] = self.group.user_is_role(
             self.request.user,
@@ -167,11 +177,15 @@ def group_members_add(request, slug):
     form = forms.GroupMemberForm(request.POST)
     if form.is_valid():
         for user in form.cleaned_data["user_identifiers"]:
-            group.join(
-                user,
-                role=GroupMember.MANAGER if form.cleaned_data[
-                    "manager_role"] else GroupMember.MEMBER
-            )
+            try:
+                group.join(
+                    user,
+                    role=GroupMember.MANAGER if form.cleaned_data[
+                        "manager_role"] else GroupMember.MEMBER
+                )
+            except Exception as e:
+                messages.add_message(request, messages.ERROR, e)
+                return redirect("group_members", slug=group.slug)
     return redirect("group_detail", slug=group.slug)
 
 
@@ -184,8 +198,31 @@ def group_member_remove(request, slug, username):
         return HttpResponseForbidden()
     else:
         GroupMember.objects.get(group=group, user=user).delete()
-        user.groups.remove(group.group)
         return redirect("group_detail", slug=group.slug)
+
+
+@login_required
+def group_member_promote(request, slug, username):
+    group = get_object_or_404(models.GroupProfile, slug=slug)
+    user = get_object_or_404(get_user_model(), username=username)
+
+    if not group.user_is_role(request.user, role="manager"):
+        return HttpResponseForbidden()
+    else:
+        GroupMember.objects.get(group=group, user=user).promote()
+        return redirect("group_members", slug=group.slug)
+
+
+@login_required
+def group_member_demote(request, slug, username):
+    group = get_object_or_404(models.GroupProfile, slug=slug)
+    user = get_object_or_404(get_user_model(), username=username)
+
+    if not group.user_is_role(request.user, role="manager"):
+        return HttpResponseForbidden()
+    else:
+        GroupMember.objects.get(group=group, user=user).demote()
+        return redirect("group_members", slug=group.slug)
 
 
 @require_POST
@@ -260,18 +297,30 @@ class GroupActivityView(ListView):
             public=True,
             action_object_content_type__model='layer')
         context['action_list_layers'] = [
-            action
-            for action in actions
-            if action.action_object and action.action_object.group == self.group.group][:15]
+                                            action
+                                            for action in actions
+                                            if action.action_object and action.action_object.group == self.group.group][
+                                        :15]
         action_list.extend(context['action_list_layers'])
         actions = Action.objects.filter(
             public=True,
             action_object_content_type__model='map')[:15]
         context['action_list_maps'] = [
-            action
-            for action in actions
-            if action.action_object and action.action_object.group == self.group.group][:15]
+                                          action
+                                          for action in actions
+                                          if action.action_object and action.action_object.group == self.group.group][
+                                      :15]
         action_list.extend(context['action_list_maps'])
+        actions = Action.objects.filter(
+            public=True,
+            action_object_content_type__model='document')[:15]
+        context['action_list_documents'] = [
+                                               action
+                                               for action in actions
+                                               if
+                                               action.action_object and action.action_object.group == self.group.group][
+                                           :15]
+        action_list.extend(context['action_list_documents'])
         context['action_list_comments'] = Action.objects.filter(
             public=True,
             actor_object_id__in=members,
@@ -279,3 +328,24 @@ class GroupActivityView(ListView):
         action_list.extend(context['action_list_comments'])
         context['action_list'] = sorted(action_list, key=getKey, reverse=True)
         return context
+
+
+class GroupProfileAutocomplete(autocomplete.Select2QuerySetView):
+    def get_queryset(self):
+        request = self.request
+        user = request.user
+        qs = models.GroupProfile.objects.all()
+
+        if self.q:
+            qs = qs.filter(title__icontains=self.q)
+
+        if not user.is_authenticated or user.is_anonymous:
+            return qs.exclude(access='private')
+        elif not user.is_superuser:
+            return qs.filter(Q(pk__in=user.group_list_all()) | ~Q(access='private'))
+        return qs
+
+
+class GroupCategoryAutocomplete(SimpleSelect2View):
+    model = models.GroupCategory
+    filter_arg = 'name__icontains'

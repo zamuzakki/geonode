@@ -18,7 +18,7 @@
 #
 #########################################################################
 
-from agon_ratings.models import OverallRating
+from pinax.ratings.models import OverallRating
 from dialogos.models import Comment
 from django.contrib.contenttypes.models import ContentType
 from django.db.models import Avg
@@ -119,7 +119,7 @@ class MapIndex(indexes.SearchIndex, indexes.Indexable):
                 object_id=obj.pk,
                 content_type=ContentType.objects.get_for_model(obj)
             ).all().count()
-        except:
+        except Exception:
             return 0
 
     def prepare_title_sortable(self, obj):

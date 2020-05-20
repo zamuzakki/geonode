@@ -22,11 +22,8 @@ from django import forms
 from django.conf import settings
 from django.contrib.auth import authenticate, login, get_user_model
 from django.http import HttpResponse, HttpResponseRedirect
-from django.core.urlresolvers import reverse
-try:
-    import json
-except ImportError:
-    from django.utils import simplejson as json
+from django.urls import reverse
+import json
 from django.db.models import Q
 from django.template.response import TemplateResponse
 
@@ -88,7 +85,8 @@ def ajax_lookup(request):
     keyword = request.POST['query']
     users = get_user_model().objects.filter(Q(username__icontains=keyword)).exclude(Q(username='AnonymousUser') |
                                                                                     Q(is_active=False))
-    groups = GroupProfile.objects.filter(Q(title__icontains=keyword))
+    groups = GroupProfile.objects.filter(Q(title__icontains=keyword) |
+                                         Q(slug__icontains=keyword))
     json_dict = {
         'users': [({'username': u.username}) for u in users],
         'count': users.count(),
@@ -102,8 +100,8 @@ def ajax_lookup(request):
     )
 
 
-def err403(request):
-    if not request.user.is_authenticated():
+def err403(request, exception):
+    if not request.user.is_authenticated:
         return HttpResponseRedirect(
             reverse('account_login') +
             '?next=' +
@@ -113,14 +111,14 @@ def err403(request):
 
 
 def ident_json(request):
-    if not request.user.is_authenticated():
+    if not request.user.is_authenticated:
         return HttpResponseRedirect(
             reverse('account_login') +
             '?next=' +
             request.get_full_path())
-
+    site_url = settings.SITEURL.rstrip('/') if settings.SITEURL.startswith('http') else settings.SITEURL
     json_data = {}
-    json_data['siteurl'] = settings.SITEURL
+    json_data['siteurl'] = site_url
     json_data['name'] = settings.PYCSW['CONFIGURATION']['metadata:main']['identification_title']
 
     json_data['poc'] = {
@@ -139,12 +137,12 @@ def ident_json(request):
     json_data['counts'] = facets({'request': request, 'facet_type': 'home'})
 
     return HttpResponse(content=json.dumps(json_data),
-                        mimetype='application/json')
+                        content_type='application/json')
 
 
 def h_keywords(request):
     from geonode.base.models import HierarchicalKeyword as hk
-    keywords = json.dumps(hk.dump_bulk_tree())
+    keywords = json.dumps(hk.dump_bulk_tree(request.user, type=request.GET.get('type', None)))
     return HttpResponse(content=keywords)
 
 

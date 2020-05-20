@@ -18,17 +18,17 @@
 #
 #########################################################################
 
-import logging
 import os
 import uuid
-from urlparse import urlparse
+import logging
+from urllib.parse import urlparse
 
 from django.db import models
 from django.db.models import signals
 from django.conf import settings
 from django.contrib.contenttypes.models import ContentType
 from django.contrib.contenttypes.fields import GenericForeignKey
-from django.core.urlresolvers import reverse
+from django.urls import reverse
 from django.contrib.staticfiles import finders
 from django.utils.translation import ugettext_lazy as _
 
@@ -67,8 +67,8 @@ class Document(ResourceBase):
         help_text=_('The URL of the document if it is external.'),
         verbose_name=_('URL'))
 
-    def __unicode__(self):
-        return self.title
+    def __str__(self):
+        return "{0}".format(self.title)
 
     def get_absolute_url(self):
         return reverse('document_detail', args=(self.id,))
@@ -102,10 +102,19 @@ class Document(ResourceBase):
 class DocumentResourceLink(models.Model):
 
     # relation to the document model
-    document = models.ForeignKey(Document, related_name='links')
+    document = models.ForeignKey(
+        Document,
+        null=True,
+        blank=True,
+        related_name='links',
+        on_delete=models.CASCADE)
 
     # relation to the resource model
-    content_type = models.ForeignKey(ContentType)
+    content_type = models.ForeignKey(
+        ContentType,
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE)
     object_id = models.PositiveIntegerField()
     resource = GenericForeignKey('content_type', 'object_id')
 
@@ -121,10 +130,13 @@ def get_related_documents(resource):
 
 def get_related_resources(document):
     if document.links:
-        return [
-            link.content_type.get_object_for_this_type(id=link.object_id)
-            for link in document.links.all()
-        ]
+        try:
+            return [
+                link.content_type.get_object_for_this_type(id=link.object_id)
+                for link in document.links.all()
+            ]
+        except Exception:
+            return []
     else:
         return []
 
@@ -180,10 +192,11 @@ def post_save_document(instance, *args, **kwargs):
     mime = mime_type_map.get(ext, 'text/plain')
     url = None
 
-    if instance.doc_file:
+    if instance.id and instance.doc_file:
         name = "Hosted Document"
+        site_url = settings.SITEURL.rstrip('/') if settings.SITEURL.startswith('http') else settings.SITEURL
         url = '%s%s' % (
-            settings.SITEURL[:-1],
+            site_url,
             reverse('document_download', args=(instance.id,)))
     elif instance.doc_url:
         name = "External Document"

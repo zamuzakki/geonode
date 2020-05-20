@@ -28,7 +28,7 @@ from django.core.exceptions import ObjectDoesNotExist
 from django.core.serializers.json import DjangoJSONEncoder
 from django.views.decorators.clickjacking import xframe_options_exempt
 from django.utils.decorators import method_decorator
-from django.core.urlresolvers import reverse
+from django.urls import reverse
 from django.shortcuts import render
 from django.http import HttpResponse
 
@@ -42,7 +42,7 @@ from geonode.utils import default_map_config, forward_mercator, \
     llbbox_to_mercator, check_ogc_backend
 from geonode import geoserver, qgis_server
 
-import urlparse
+from urllib.parse import urlsplit
 
 if check_ogc_backend(geoserver.BACKEND_PACKAGE):
     # FIXME: The post service providing the map_status object
@@ -64,7 +64,7 @@ class MapCreateView(CreateView):
 
     def get_context_data(self, **kwargs):
         request = self.request
-        if 'access_token' in request.session:
+        if request and 'access_token' in request.session:
             access_token = request.session['access_token']
         else:
             access_token = None
@@ -84,10 +84,9 @@ class MapCreateView(CreateView):
                 request, mapid, 'base.view_resourcebase', _PERMISSION_MSG_VIEW)
 
             if snapshot is None:
-                config = map_obj.viewer_json(request.user, access_token)
+                config = map_obj.viewer_json(request)
             else:
-                config = snapshot_config(snapshot, map_obj, request.user,
-                                         access_token)
+                config = snapshot_config(snapshot, map_obj, request)
             # list all required layers
             map_layers = MapLayer.objects.filter(
                 map_id=mapid).order_by('stack_order')
@@ -100,7 +99,7 @@ class MapCreateView(CreateView):
                 'preview': getattr(
                     settings,
                     'GEONODE_CLIENT_LAYER_PREVIEW_LIBRARY',
-                    '')
+                    'leaflet')
             }
             return context
         else:
@@ -155,15 +154,14 @@ class MapCreateView(CreateView):
                         service = layer.remote_service
                         # Probably not a good idea to send the access token to every remote service.
                         # This should never match, so no access token should be sent to remote services.
-                        ogc_server_url = urlparse.urlsplit(
+                        ogc_server_url = urlsplit(
                             ogc_server_settings.PUBLIC_LOCATION).netloc
-                        service_url = urlparse.urlsplit(
+                        service_url = urlsplit(
                             service.base_url).netloc
 
                         if access_token and ogc_server_url == service_url and \
                                 'access_token' not in service.base_url:
-                            url = service.base_url + \
-                                  '?access_token=' + access_token
+                            url = '%s?access_token=%s' % (service.base_url, access_token)
                         else:
                             url = service.base_url
                         map_layers = MapLayer(map=map_obj,
@@ -172,20 +170,20 @@ class MapCreateView(CreateView):
                                               layer_params=json.dumps(config),
                                               visibility=True,
                                               source_params=json.dumps({
-                                                "ptype": service.ptype,
-                                                "remote": True,
-                                                "url": url,
-                                                "name": service.name,
-                                                "title": "[R] %s" % service.title}))
+                                                  "ptype": service.ptype,
+                                                  "remote": True,
+                                                  "url": url,
+                                                  "name": service.name,
+                                                  "title": "[R] %s" % service.title}))
                     else:
-                        ogc_server_url = urlparse.urlsplit(
+                        ogc_server_url = urlsplit(
                             ogc_server_settings.PUBLIC_LOCATION).netloc
-                        layer_url = urlparse.urlsplit(layer.ows_url).netloc
+                        layer_url = urlsplit(layer.ows_url).netloc
 
                         if access_token and ogc_server_url == layer_url and \
                                 'access_token' not in layer.ows_url:
                             url = layer.ows_url + '?access_token=' + \
-                                  access_token
+                                access_token
                         else:
                             url = layer.ows_url
                         map_layers = MapLayer(
@@ -199,7 +197,7 @@ class MapCreateView(CreateView):
                             visibility=True
                         )
 
-                if bbox is not None:
+                if bbox and len(bbox) >= 4:
                     minx, miny, maxx, maxy = [float(coord) for coord in bbox]
                     x = (minx + maxx) / 2
                     y = (miny + maxy) / 2
@@ -236,10 +234,9 @@ class MapCreateView(CreateView):
                 map_obj.handle_moderated_uploads()
 
                 if snapshot is None:
-                    config = map_obj.viewer_json(request.user, access_token)
+                    config = map_obj.viewer_json(request)
                 else:
-                    config = snapshot_config(snapshot, map_obj, request.user,
-                                             access_token)
+                    config = snapshot_config(snapshot, map_obj, request)
 
                 config['fromLayer'] = True
                 context = {
@@ -251,7 +248,7 @@ class MapCreateView(CreateView):
                     'preview': getattr(
                         settings,
                         'GEONODE_CLIENT_LAYER_PREVIEW_LIBRARY',
-                        '')
+                        'leaflet')
                 }
 
             else:
@@ -286,16 +283,10 @@ class MapDetailView(DetailView):
         map_obj = _resolve_map(
             request, mapid, 'base.view_resourcebase', _PERMISSION_MSG_VIEW)
 
-        if 'access_token' in request.session:
-            access_token = request.session['access_token']
-        else:
-            access_token = None
-
         if snapshot is None:
-            config = map_obj.viewer_json(request.user, access_token)
+            config = map_obj.viewer_json(request)
         else:
-            config = snapshot_config(snapshot, map_obj, request.user,
-                                     access_token)
+            config = snapshot_config(snapshot, map_obj, request)
         # list all required layers
         layers = Layer.objects.all()
         map_layers = MapLayer.objects.filter(
@@ -309,7 +300,7 @@ class MapDetailView(DetailView):
             'preview': getattr(
                 settings,
                 'GEONODE_CLIENT_LAYER_PREVIEW_LIBRARY',
-                '')
+                'leaflet')
         }
         return context
 
@@ -332,16 +323,10 @@ class MapEmbedView(DetailView):
         map_obj = _resolve_map(
             request, mapid, 'base.view_resourcebase', _PERMISSION_MSG_VIEW)
 
-        if 'access_token' in request.session:
-            access_token = request.session['access_token']
-        else:
-            access_token = None
-
         if snapshot is None:
-            config = map_obj.viewer_json(request.user, access_token)
+            config = map_obj.viewer_json(request)
         else:
-            config = snapshot_config(snapshot, map_obj, request.user,
-                                     access_token)
+            config = snapshot_config(snapshot, map_obj, request)
         # list all required layers
         map_layers = MapLayer.objects.filter(
             map_id=mapid).order_by('stack_order')
@@ -353,7 +338,7 @@ class MapEmbedView(DetailView):
             'preview': getattr(
                 settings,
                 'GEONODE_CLIENT_LAYER_PREVIEW_LIBRARY',
-                '')
+                'leaflet')
         }
         return context
 
@@ -381,19 +366,12 @@ class MapEditView(UpdateView):
                                'base.view_resourcebase',
                                _PERMISSION_MSG_VIEW)
 
-        if 'access_token' in request.session:
-            access_token = request.session['access_token']
-        else:
-            access_token = None
-
         if snapshot is None:
-            config = map_obj.viewer_json(request.user,
-                                         access_token)
+            config = map_obj.viewer_json(request)
         else:
             config = snapshot_config(snapshot,
                                      map_obj,
-                                     request.user,
-                                     access_token)
+                                     request)
 
         layers = Layer.objects.all()
         map_layers = MapLayer.objects.filter(
@@ -408,7 +386,7 @@ class MapEditView(UpdateView):
             'preview': getattr(
                 settings,
                 'GEONODE_CLIENT_LAYER_PREVIEW_LIBRARY',
-                '')
+                'leaflet')
         }
         return context
 
@@ -444,7 +422,7 @@ class MapUpdateView(UpdateView):
                                _PERMISSION_MSG_VIEW)
 
         if request.method == 'POST':
-            if not request.user.is_authenticated():
+            if not request.user.is_authenticated:
                 return self.render_to_response(
                     'You must be logged in to save new maps',
                     content_type="text/plain",
@@ -463,7 +441,9 @@ class MapUpdateView(UpdateView):
                 body = ''
 
             try:
-                map_obj.update_from_viewer(body)
+                # Call the base implementation first to get a context
+                context = super(UpdateView, self).get_context_data(**kwargs)
+                map_obj.update_from_viewer(body, context=context)
             except ValueError as e:
                 return self.render_to_response(str(e), status=400)
             else:
@@ -523,7 +503,7 @@ def map_download_qlr(request, mapid):
         if j_layer["service"] is None:
             j_layers.remove(j_layer)
             continue
-        if (len([l for l in j_layers if l == j_layer])) > 1:
+        if (len([_l for _l in j_layers if _l == j_layer])) > 1:
             j_layers.remove(j_layer)
 
     map_layers = []
@@ -612,13 +592,13 @@ def set_thumbnail_map(request, mapid):
         return HttpResponse('Bad Request')
 
     map_layers = MapLayer.objects.filter(map__id=mapid)
-    local_layers = [l for l in map_layers if l.local]
+    local_layers = [_l for _l in map_layers if _l.local]
 
     layers = {}
     for layer in local_layers:
         try:
-            l = Layer.objects.get(typename=layer.name)
-            layers[l.name] = l
+            _l = Layer.objects.get(typename=layer.name)
+            layers[_l.name] = _l
         except Layer.DoesNotExist:
             msg = 'No Layer found for typename: {0}'.format(layer.name)
             logger.debug(msg)
@@ -630,8 +610,7 @@ def set_thumbnail_map(request, mapid):
     bbox = _get_bbox_from_layers(layers)
 
     # Give thumbnail creation to celery tasks, and exit.
-    map_obj = Map.objects.get(id=mapid)
-    create_qgis_server_thumbnail.delay(map_obj, overwrite=True, bbox=bbox)
+    create_qgis_server_thumbnail.delay('maps.map', mapid, overwrite=True, bbox=bbox)
     retval = {
         'success': True
     }

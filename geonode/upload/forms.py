@@ -47,14 +47,13 @@ class LayerUploadForm(forms.Form):
     shx_file = forms.FileField(required=False)
     prj_file = forms.FileField(required=False)
     xml_file = forms.FileField(required=False)
+    charset = forms.CharField(required=False)
 
     if check_ogc_backend(geoserver.BACKEND_PACKAGE):
         sld_file = forms.FileField(required=False)
     if check_ogc_backend(qgis_server.BACKEND_PACKAGE):
         qml_file = forms.FileField(required=False)
 
-    geogig = forms.BooleanField(required=False)
-    geogig_store = forms.CharField(required=False)
     time = forms.BooleanField(required=False)
 
     mosaic = forms.BooleanField(required=False)
@@ -103,11 +102,8 @@ class LayerUploadForm(forms.Form):
 
     def _get_uploaded_files(self):
         """Return a list with all of the uploaded files"""
-        uploaded = []
-        for field_name, django_file in self.files.iteritems():
-            if field_name != "base_file":
-                uploaded.append(django_file)
-        return uploaded
+        return [django_file for field_name, django_file in self.files.items()
+                if field_name != "base_file"]
 
 
 class TimeForm(forms.Form):

@@ -23,12 +23,12 @@
     relationships, actstream user_messages and potentially others
 """
 import logging
-import datetime
 from collections import defaultdict
 from dialogos.models import Comment
 
 from django.conf import settings
 from django.db.models import signals
+from django.urls import reverse
 from django.utils.translation import ugettext_lazy as _
 
 # from actstream.exceptions import ModelNotActionable
@@ -37,7 +37,8 @@ from geonode.layers.models import Layer
 from geonode.maps.models import Map
 from geonode.documents.models import Document
 from geonode.notifications_helper import (send_notification, queue_notification,
-                                          has_notifications, get_notification_recipients)
+                                          has_notifications, get_notification_recipients,
+                                          get_comment_notification_recipients)
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +55,7 @@ if "relationships" in settings.INSTALLED_APPS:
 ratings = None
 if "ratings" in settings.INSTALLED_APPS:
     ratings = True
-    from agon_ratings.models import Rating
+    from pinax.ratings.models import Rating
 
 
 def activity_post_modify_object(sender, instance, created=None, **kwargs):
@@ -90,44 +91,59 @@ def activity_post_modify_object(sender, instance, created=None, **kwargs):
     except Exception as e:
         logger.exception(e)
 
-    action_settings['comment'].update(actor=getattr(instance, 'author', None),
-                                      created_verb=_("added a comment"),
-                                      target=getattr(instance, 'content_object', None),
-                                      updated_verb=_("updated a comment"),
-                                      )
-    action_settings['layer'].update(created_verb=_('uploaded'))
+    try:
+        action_settings['comment'].update(actor=getattr(instance, 'author', None),
+                                          created_verb=_("added a comment"),
+                                          target=getattr(instance, 'content_object', None),
+                                          updated_verb=_("updated a comment"),
+                                          )
+    except Exception as e:
+        logger.exception(e)
 
-    action = action_settings[obj_type]
-    if created:
-        # object was created
-        verb = action.get('created_verb')
-        raw_action = 'created'
+    try:
+        action_settings['layer'].update(created_verb=_('uploaded'))
+    except Exception as e:
+        logger.exception(e)
 
-    else:
-        if created is False:
-            # object was saved.
-            if not isinstance(instance, Layer) and not isinstance(instance, Map):
-                verb = action.get('updated_verb')
-                raw_action = 'updated'
+    try:
+        action_settings['document'].update(created_verb=_('uploaded'))
+    except Exception as e:
+        logger.exception(e)
 
-        if created is None:
-            # object was deleted.
-            verb = action.get('deleted_verb')
-            raw_action = 'deleted'
-            action.update(action_object=None,
-                          target=None)
+    try:
+        action = action_settings[obj_type]
+        if created:
+            # object was created
+            verb = action.get('created_verb')
+            raw_action = 'created'
+
+        else:
+            if created is False:
+                # object was saved.
+                if not isinstance(instance, Layer) and not isinstance(instance, Map):
+                    verb = action.get('updated_verb')
+                    raw_action = 'updated'
+
+            if created is None:
+                # object was deleted.
+                verb = action.get('deleted_verb')
+                raw_action = 'deleted'
+                action.update(action_object=None,
+                              target=None)
+    except Exception as e:
+        logger.exception(e)
 
     if verb:
         try:
             activity.send(action.get('actor'),
-                          verb=u"{verb}".format(verb=verb),
+                          verb="{verb}".format(verb=verb),
                           action_object=action.get('action_object'),
                           target=action.get('target', None),
                           object_name=action.get('object_name'),
                           raw_action=raw_action,
                           )
         # except ModelNotActionable:
-        except:
+        except Exception:
             logger.debug('The activity received a non-actionable Model or None as the actor/action.')
 
 
@@ -150,6 +166,9 @@ if activity:
 
     signals.post_save.connect(activity_post_modify_object, sender=Map)
     signals.post_delete.connect(activity_post_modify_object, sender=Map)
+
+    signals.post_save.connect(activity_post_modify_object, sender=Document)
+    signals.post_delete.connect(activity_post_modify_object, sender=Document)
 
 
 def notification_post_save_resource(instance, sender, created, **kwargs):
@@ -198,9 +217,13 @@ def comment_post_save(instance, sender, created, **kwargs):
     """ Send a notification when a comment to a layer, map or document has
     been submitted
     """
-    notice_type_label = '%s_comment' % instance.content_object.class_name.lower()
-    recipients = get_notification_recipients(notice_type_label, instance.author)
-    send_notification(recipients, notice_type_label, {"instance": instance})
+    notice_type_label = '%s_comment' % instance.content_type.model.lower()
+    recipients = get_comment_notification_recipients(notice_type_label, instance.content_object.owner)
+    send_notification(recipients,
+                      notice_type_label,
+                      extra_context={
+                          "instance": instance, 'notice_settings_url': reverse('pinax_notifications:notice_settings')
+                      })
 
 
 # signals
@@ -219,42 +242,3 @@ if relationships and activity:
     signals.pre_delete.connect(relationship_pre_delete_actstream, sender=Relationship)
 if relationships and has_notifications:
     signals.post_save.connect(relationship_post_save, sender=Relationship)
-
-
-def json_serializer_producer(dictionary):
-    output = {}
-    # pop no useful information for others services which wants to connect to geonode
-    if 'supplemental_information_en' in dictionary.keys():
-        dictionary.pop('supplemental_information_en', None)
-    if 'supplemental_information' in dictionary.keys():
-        dictionary.pop('supplemental_information', None)
-    if 'doc_file' in dictionary.keys():
-        file_object = dictionary['doc_file']
-        dictionary['doc_file'] = str(file_object)
-    if 'regions' in dictionary.keys():
-        keys = dictionary['regions']
-        dictionary['regions'] = str(keys)
-    if 'keywords' in dictionary.keys():
-        keys = dictionary['keywords']
-        dictionary['keywords'] = str(keys)
-    if 'tkeywords' in dictionary.keys():
-        keys = dictionary['tkeywords']
-        dictionary['tkeywords'] = str(keys)
-    if 'styles' in dictionary.keys():
-        keys = dictionary['styles']
-        dictionary['styles'] = str(keys)
-    if 'contacts' in dictionary.keys():
-        keys = dictionary['contacts']
-        dictionary['contacts'] = str(keys)
-    for (x, y) in dictionary.items():
-        if not y:
-            # this is used to solve
-            # TypeError: [] is not JSON serializable when it is null
-            y = str(y)
-        # check datetime object
-        # TODO: Use instanceof
-        if type(y) == datetime.datetime:
-            y = str(y)
-
-        output[x] = y
-    return output

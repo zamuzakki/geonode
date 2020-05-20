@@ -17,13 +17,15 @@
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 #########################################################################
+
+from geonode.tests.base import GeoNodeBaseTestSupport
+
 import os
-import urlparse
+from urllib.parse import unquote
 from imghdr import what
 
 import gisdata
 from django.core.management import call_command
-from django.test import LiveServerTestCase
 from geonode import qgis_server
 from geonode.qgis_server.models import QGISServerLayer, QGISServerStyle
 from geonode.decorators import on_ogc_backend
@@ -31,10 +33,9 @@ from geonode.decorators import on_ogc_backend
 from geonode.layers.models import Layer
 
 
-class TestManagementCommands(LiveServerTestCase):
+class TestManagementCommands(GeoNodeBaseTestSupport):
 
-    def setUp(self):
-        call_command('loaddata', 'people_data', verbosity=0)
+    fixtures = ['initial_data.json', 'people_data.json']
 
     @on_ogc_backend(qgis_server.BACKEND_PACKAGE)
     def test_import_layers(self):
@@ -72,7 +73,7 @@ class TestManagementCommands(LiveServerTestCase):
         tiles_link = layer.link_set.get(name='Tiles')
         """:type: geonode.base.models.Link"""
         self.assertEqual(tiles_link.extension, 'tiles')
-        tiles_url = urlparse.unquote(tiles_link.url)
+        tiles_url = unquote(tiles_link.url)
         tiles = {
             'z': 7,
             'x': 34,
@@ -117,7 +118,7 @@ class TestManagementCommands(LiveServerTestCase):
             filepath = f.file.path
             __, extension = os.path.splitext(filepath)
             old_mtime = [
-                v for k, v in layer_modified_time.iteritems()
+                v for k, v in layer_modified_time.items()
                 if k.endswith(extension)][0]
             self.assertNotEqual(old_mtime, os.path.getmtime(filepath))
 
@@ -125,10 +126,10 @@ class TestManagementCommands(LiveServerTestCase):
         # previous files should not exists
         for f in layer.upload_session.layerfile_set.all():
             filepath = f.file.path
-            if filepath not in layer_modified_time.iterkeys():
+            if filepath not in layer_modified_time.keys():
                 __, extension = os.path.splitext(filepath)
                 old_filepath = [
-                    k for k in layer_modified_time.iterkeys()
+                    k for k in layer_modified_time.keys()
                     if k.endswith(extension)][0]
                 self.assertFalse(os.path.exists(old_filepath))
 

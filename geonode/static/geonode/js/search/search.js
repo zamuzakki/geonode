@@ -32,34 +32,41 @@
         if ($location.search().hasOwnProperty('title__icontains')){
           params['title__icontains'] = $location.search()['title__icontains'];
         }
-        $http.get(CATEGORIES_ENDPOINT, {params: params}).success(function(data){
-            if($location.search().hasOwnProperty('category__identifier__in')){
-                data.objects = module.set_initial_filters_from_query(data.objects,
-                    $location.search()['category__identifier__in'], 'identifier');
-            }
-            $rootScope.categories = data.objects;
-            if (HAYSTACK_FACET_COUNTS && $rootScope.query_data) {
-                module.haystack_facets($http, $rootScope, $location);
-            }
-        });
+        $http.get(CATEGORIES_ENDPOINT, {params: params}).then(successCallback, errorCallback);
+
+        function successCallback(data) {
+          //success code
+          if($location.search().hasOwnProperty('category__identifier__in')){
+              data.data.objects = module.set_initial_filters_from_query(data.data.objects,
+                  $location.search()['category__identifier__in'], 'identifier');
+          }
+          $rootScope.categories = data.data.objects;
+          if (HAYSTACK_FACET_COUNTS && $rootScope.query_data) {
+              module.haystack_facets($http, $rootScope, $location);
+          }
+        };
+
+        function errorCallback(error) {
+          //error code
+        };
     }
 
   // Load group categories
   module.load_group_categories = function ($http, $rootScope, $location){
         var params = typeof FILTER_TYPE == 'undefined' ? {} : {'type': FILTER_TYPE};
-        if ($location.search().hasOwnProperty('name__icontains')){
-          params['name__icontains'] = $location.search()['name__icontains'];
-        }
-        $http.get(GROUP_CATEGORIES_ENDPOINT, {params: params}).success(function(data){
-            if($location.search().hasOwnProperty('slug')){
-                data.objects = module.set_initial_filters_from_query(data.objects,
-                    $location.search()['slug'], 'identifier');
-            }
-            $rootScope.categories = data.objects;
-            if (HAYSTACK_FACET_COUNTS && $rootScope.query_data) {
-                module.haystack_facets($http, $rootScope, $location);
-            }
-        });
+        $http.get(GROUP_CATEGORIES_ENDPOINT, {params: params}).then(successCallback, errorCallback);
+
+        function successCallback(data) {
+          //success code
+          $rootScope.groupCategories = data.data.objects;
+          if (HAYSTACK_FACET_COUNTS && $rootScope.query_data) {
+              module.haystack_facets($http, $rootScope, $location);
+          }
+        };
+
+        function errorCallback(error) {
+          //error code
+        };
     }
 
   module.load_keywords = function ($http, $rootScope, $location){
@@ -67,24 +74,40 @@
         if ($location.search().hasOwnProperty('title__icontains')){
           params['title__icontains'] = $location.search()['title__icontains'];
         }
-        $http.get(KEYWORDS_ENDPOINT, {params: params}).success(function(data){
-            if($location.search().hasOwnProperty('keywords__slug__in')){
-                data.objects = module.set_initial_filters_from_query(data.objects,
-                    $location.search()['keywords__slug__in'], 'slug');
-            }
-            $rootScope.keywords = data.objects;
-            if (HAYSTACK_FACET_COUNTS && $rootScope.query_data) {
-                module.haystack_facets($http, $rootScope, $location);
-            }
-        });
+        $http.get(KEYWORDS_ENDPOINT, {params: params}).then(successCallback, errorCallback);
+
+        function successCallback(data) {
+          //success code
+          debugger;
+          if($location.search().hasOwnProperty('keywords__slug__in')){
+              data.data.objects = module.set_initial_filters_from_query(data.data.objects,
+                  $location.search()['keywords__slug__in'], 'slug');
+          }
+          $rootScope.keywords = data.data.objects;
+          if (HAYSTACK_FACET_COUNTS && $rootScope.query_data) {
+              module.haystack_facets($http, $rootScope, $location);
+          }
+        };
+
+        function errorCallback(error) {
+          //error code
+        };
     }
+
 
   module.load_h_keywords = function($http, $rootScope, $location){
     var params = typeof FILTER_TYPE == 'undefined' ? {} : {'type': FILTER_TYPE};
-    $http.get(H_KEYWORDS_ENDPOINT, {params: params}).success(function(data){
+    $http.get(H_KEYWORDS_ENDPOINT, {params: params}).then(successCallback, errorCallback);
+
+    function successCallback(data) {
+      //success code
       $('#treeview').treeview({
-        data: data,
+        data: data.data,
         multiSelect: true,
+        showIcon: true,
+        showCheckbox: false,
+        showTags: true,
+        tagsClass: 'badge',
         onNodeSelected: function($event, node) {
           $rootScope.$broadcast('select_h_keyword', node);
           if(node.nodes){
@@ -103,58 +126,102 @@
           }
         }
       });
-    });
+    };
+
+    function errorCallback(error) {
+      //error code
+    };
   };
 
   module.load_t_keywords = function ($http, $rootScope, $location){
-        var params = typeof FILTER_TYPE == 'undefined' ? {} : {'type': FILTER_TYPE};
-        if ($location.search().hasOwnProperty('title__icontains')){
-          params['title__icontains'] = $location.search()['title__icontains'];
-        }
-        $http.get(T_KEYWORDS_ENDPOINT, {params: params}).success(function(data){
-            if($location.search().hasOwnProperty('tkeywords__id__in')){
-                data.objects = module.set_initial_filters_from_query(data.objects,
-                    $location.search()['tkeywords__id__in'], 'id');
-            }
-            $rootScope.tkeywords = data.objects;
-            if (HAYSTACK_FACET_COUNTS && $rootScope.query_data) {
-                module.haystack_facets($http, $rootScope, $location);
-            }
-        });
+    var params = typeof FILTER_TYPE == 'undefined' ? {} : {'type': FILTER_TYPE};
+    if ($location.search().hasOwnProperty('title__icontains')){
+      params['title__icontains'] = $location.search()['title__icontains'];
+    }
+    if (enable_thesauri){
+      $http.get(T_KEYWORDS_ENDPOINT, {params: params}).then(successCallback, errorCallback);
     }
 
+    function successCallback(data) {
+      //success code
+      if($location.search().hasOwnProperty('tkeywords__id__in')){
+          data.data.objects = module.set_initial_filters_from_query(data.data.objects,
+              $location.search()['tkeywords__id__in'], 'id');
+      }
+      $rootScope.tkeywords = data.data.objects;
+      if (HAYSTACK_FACET_COUNTS && $rootScope.query_data) {
+          module.haystack_facets($http, $rootScope, $location);
+      }
+    };
+
+    function errorCallback(error) {
+      //error code
+    };
+  }
+
   module.load_regions = function ($http, $rootScope, $location){
-        var params = typeof FILTER_TYPE == 'undefined' ? {} : {'type': FILTER_TYPE};
-        if ($location.search().hasOwnProperty('title__icontains')){
-          params['title__icontains'] = $location.search()['title__icontains'];
+    var params = typeof FILTER_TYPE == 'undefined' ? {} : {'type': FILTER_TYPE};
+    if ($location.search().hasOwnProperty('title__icontains')){
+      params['title__icontains'] = $location.search()['title__icontains'];
+    }
+    $http.get(REGIONS_ENDPOINT, {params: params}).then(successCallback, errorCallback);
+
+    function successCallback(data) {
+        //success code
+        if($location.search().hasOwnProperty('regions__name__in')){
+            data.data.objects = module.set_initial_filters_from_query(data.data.objects,
+                $location.search()['regions__name__in'], 'name');
         }
-        $http.get(REGIONS_ENDPOINT, {params: params}).success(function(data){
-            if($location.search().hasOwnProperty('regions__name__in')){
-                data.objects = module.set_initial_filters_from_query(data.objects,
-                    $location.search()['regions__name__in'], 'name');
-            }
-            $rootScope.regions = data.objects;
-            if (HAYSTACK_FACET_COUNTS && $rootScope.query_data) {
-                module.haystack_facets($http, $rootScope, $location);
-            }
-        });
+        $rootScope.regions = data.data.objects;
+        if (HAYSTACK_FACET_COUNTS && $rootScope.query_data) {
+            module.haystack_facets($http, $rootScope, $location);
+        }
+      };
+
+      function errorCallback(error) {
+        //error code
+      };
+    }
+
+    module.load_groups = function ($http, $rootScope, $location){
+      var params = typeof FILTER_TYPE == 'undefined' ? {} : {'type': FILTER_TYPE};
+      $http.get(GROUPS_ENDPOINT, {params: params}).then(successCallback, errorCallback);
+
+      function successCallback(data) {
+        //success code
+        $rootScope.groups = data.data.objects;
+        if (HAYSTACK_FACET_COUNTS && $rootScope.query_data) {
+            module.haystack_facets($http, $rootScope, $location);
+        }
+      };
+
+      function errorCallback(error) {
+        //error code
+      };
     }
 
     module.load_owners = function ($http, $rootScope, $location){
-        var params = typeof FILTER_TYPE == 'undefined' ? {} : {'type': FILTER_TYPE};
-        if ($location.search().hasOwnProperty('title__icontains')){
-            params['title__icontains'] = $location.search()['title__icontains'];
+      var params = typeof FILTER_TYPE == 'undefined' ? {} : {'type': FILTER_TYPE};
+      if ($location.search().hasOwnProperty('title__icontains')){
+          params['title__icontains'] = $location.search()['title__icontains'];
+      }
+      $http.get(OWNERS_ENDPOINT, {params: params}).then(successCallback, errorCallback);
+
+      function successCallback(data) {
+        //success code
+        if($location.search().hasOwnProperty('owner__username__in')){
+            data.data.objects = module.set_initial_filters_from_query(data.data.objects,
+                $location.search()['owner__username__in'], 'identifier');
         }
-        $http.get(OWNERS_ENDPOINT, {params: params}).success(function(data){
-            if($location.search().hasOwnProperty('owner__username__in')){
-                data.objects = module.set_initial_filters_from_query(data.objects,
-                    $location.search()['owner__username__in'], 'identifier');
-            }
-            $rootScope.owners = data.objects;
-            if (HAYSTACK_FACET_COUNTS && $rootScope.query_data) {
-                module.haystack_facets($http, $rootScope, $location);
-            }
-        });
+        $rootScope.owners = data.data.objects;
+        if (HAYSTACK_FACET_COUNTS && $rootScope.query_data) {
+            module.haystack_facets($http, $rootScope, $location);
+        }
+      };
+
+      function errorCallback(error) {
+        //error code
+      };
     }
 
   // Update facet counts for categories and keywords
@@ -237,7 +304,7 @@
        module.load_categories($http, $rootScope, $location);
     }
 
-    if ($('#groupcategories').length > 0){
+    if ($('#group-categories').length > 0){
        module.load_group_categories($http, $rootScope, $location);
     }
 
@@ -251,6 +318,9 @@
     }
     if ($('#owners').length > 0){
        module.load_owners($http, $rootScope, $location);
+    }
+    if ($('#groups').length > 0){
+       module.load_groups($http, $rootScope, $location);
     }
     if ($('#tkeywords').length > 0){
        module.load_t_keywords($http, $rootScope, $location);
@@ -291,11 +361,14 @@
 
     //Get data from apis and make them available to the page
     function query_api(data){
-      $http.get(Configs.url, {params: data || {}}).success(function(data){
+      $http.get(Configs.url, {params: data || {}}).then(successCallback, errorCallback);
+
+      function successCallback(data) {
+        //success code
         setTimeout(function(){$('[ng-controller="CartList"] [data-toggle="tooltip"]').tooltip();},0);
-        $scope.results = data.objects;
-        $scope.total_counts = data.meta.total_count;
-        $scope.$root.query_data = data;
+        $scope.results = data.data.objects;
+        $scope.total_counts = data.data.meta.total_count;
+        $scope.$root.query_data = data.data;
         if (HAYSTACK_SEARCH) {
           if ($location.search().hasOwnProperty('q')){
             $scope.text_query = $location.search()['q'].replace(/\+/g," ");
@@ -304,6 +377,12 @@
           if ($location.search().hasOwnProperty('title__icontains')){
             $scope.text_query = $location.search()['title__icontains'].replace(/\+/g," ");
           }
+          if ($location.search().hasOwnProperty('name__icontains')){
+            $scope.text_query = $location.search()['name__icontains'].replace(/\+/g," ");
+          }
+          if ($location.search().hasOwnProperty('name')) {
+            $scope.text_query = $location.search()['name'].replace(/\+/g, " ");
+          }
         }
 
         //Update facet/keyword/category counts from search results
@@ -311,11 +390,11 @@
             try {
                 module.haystack_facets($http, $scope.$root, $location);
                 $("#types").find("a").each(function(){
-                    if ($(this)[0].id in data.meta.facets.subtype) {
-                        $(this).find("span").text(data.meta.facets.subtype[$(this)[0].id]);
+                    if ($(this)[0].id in data.data.meta.facets.subtype) {
+                        $(this).find("span").text(data.data.meta.facets.subtype[$(this)[0].id]);
                     }
-                    else if ($(this)[0].id in data.meta.facets.type) {
-                        $(this).find("span").text(data.meta.facets.type[$(this)[0].id]);
+                    else if ($(this)[0].id in data.data.meta.facets.type) {
+                        $(this).find("span").text(data.data.meta.facets.type[$(this)[0].id]);
                     } else {
                         $(this).find("span").text("0");
                     }
@@ -324,10 +403,13 @@
                 // console.log(err);
             }
         }
-      });
+      };
+
+      function errorCallback(error) {
+        //error code
+      };
     };
     query_api($scope.query);
-
 
     /*
     * Pagination
@@ -370,7 +452,6 @@
     * End pagination
     */
 
-
     if (!Configs.hasOwnProperty("disableQuerySync")) {
         // Keep in sync the page location with the query object
         $scope.$watch('query', function(){
@@ -378,7 +459,7 @@
         }, true);
     }
 
-    // Hyerarchical keywords listeners
+    // Hierarchical keyword listeners
     $scope.$on('select_h_keyword', function($event, element){
       var data_filter = 'keywords__slug__in';
       var query_entry = [];
@@ -485,7 +566,7 @@
     }
 
     $scope.single_choice_listener = function($event){
-      var element = $(event.currentTarget);
+      var element = $($event.currentTarget);
       var query_entry = [];
       var data_filter = element.attr('data-filter');
       var value = element.attr('data-value');
@@ -513,63 +594,29 @@
       }
     }
 
-    /*
-    * Text search management
-    */
-    var text_autocomplete = $('#text_search_input').yourlabsAutocomplete({
-          url: AUTOCOMPLETE_URL_RESOURCEBASE,
-          choiceSelector: 'span',
-          hideAfter: 200,
-          minimumCharacters: 1,
-          placeholder: gettext('Enter your text here ...'),
-          autoHilightFirst: false
-    });
-
-    $('#text_search_input').keypress(function(e) {
-      if(e.which == 13) {
-        $('#text_search_btn').click();
-        $('.yourlabs-autocomplete').hide();
-      }
-    });
-
-    $('#text_search_input').bind('selectChoice', function(e, choice, text_autocomplete) {
-          if(choice[0].children[0] == undefined) {
-              $('#text_search_input').val($(choice[0]).text());
-              $('#text_search_btn').click();
-          }
-    });
-
     $('#text_search_btn').click(function(){
-        if (HAYSTACK_SEARCH)
+        if (HAYSTACK_SEARCH) {
             $scope.query['q'] = $('#text_search_input').val();
-        else
-            if (AUTOCOMPLETE_URL_RESOURCEBASE == "/autocomplete/ProfileAutocomplete/")
+        } else {
+            if (AUTOCOMPLETE_URL_RESOURCEBASE == "/people/autocomplete/") { // updated url to work with new autocomplete backend format
                 // a user profile has no title; if search was triggered from
                 // the /people page, filter by username instead
                 var query_key = 'username__icontains';
-            else
-                console.log('search key', $('#text_search_input').data());
+            } else if (AUTOCOMPLETE_URL_RESOURCEBASE == "/groups/autocomplete_category/" ) {
+                // Adding in this conditional since both groups autocomplete and searches requests need to search name not title.
+                var query_key = 'name__icontains';
+            } else if (AUTOCOMPLETE_URL_RESOURCEBASE == "/groups/autocomplete/" ) {
+                // Adding in this conditional since both groups autocomplete and searches requests need to search name not title.
+                var query_key = $('#text_search_input').data('query-key')||'title';
+            } else {
                 var query_key = $('#text_search_input').data('query-key')||'title__icontains';
+            }
             $scope.query[query_key] = $('#text_search_input').val();
+        }
+        $scope.query['abstract__icontains'] = $('#text_search_input').val();
+        $scope.query['purpose__icontains'] = $('#text_search_input').val();
+        $scope.query['f_method'] = 'or';
         query_api($scope.query);
-    });
-
-    /*
-    * Region search management
-    */
-    var region_autocomplete = $('#region_search_input').yourlabsAutocomplete({
-          url: AUTOCOMPLETE_URL_REGION,
-          choiceSelector: 'span',
-          hideAfter: 200,
-          minimumCharacters: 1,
-          appendAutocomplete: $('#region_search_input'),
-          placeholder: gettext('Enter your region here ...')
-    });
-    $('#region_search_input').bind('selectChoice', function(e, choice, region_autocomplete) {
-          if(choice[0].children[0] == undefined) {
-              $('#region_search_input').val(choice[0].innerHTML);
-              $('#region_search_btn').click();
-          }
     });
 
     $('#region_search_btn').click(function(){
@@ -601,15 +648,19 @@
     var init_date = true;
     $scope.$watch('date_query', function(){
       if($scope.date_query.date__gte != '' && $scope.date_query.date__lte != ''){
-        $scope.query['date__range'] = $scope.date_query.date__gte + ',' + $scope.date_query.date__lte;
+        var dateGte = new Date($scope.date_query.date__gte).toISOString();
+        var dateLte = new Date($scope.date_query.date__lte).toISOString();
+        $scope.query['date__range'] = dateGte + ',' + dateLte;
         delete $scope.query['date__gte'];
         delete $scope.query['date__lte'];
       }else if ($scope.date_query.date__gte != ''){
-        $scope.query['date__gte'] = $scope.date_query.date__gte;
+        var dateGte = new Date($scope.date_query.date__gte).toISOString();
+        $scope.query['date__gte'] = dateGte;
         delete $scope.query['date__range'];
         delete $scope.query['date__lte'];
       }else if ($scope.date_query.date__lte != ''){
-        $scope.query['date__lte'] = $scope.date_query.date__lte;
+        var dateLte = new Date($scope.date_query.date__lte).toISOString();
+        $scope.query['date__lte'] = dateLte;
         delete $scope.query['date__range'];
         delete $scope.query['date__gte'];
       }else{
@@ -626,41 +677,44 @@
     }, true);
 
     /*
-    * Spatial search
-    */
+     * Spatial search
+     */
     if ($('.leaflet_map').length > 0) {
       angular.extend($scope, {
-        layers: {
-          baselayers: {
-            stamen: {
-              name: 'OpenStreetMap Mapnik',
-              type: 'xyz',
-              url: '//{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-              layerOptions: {
-                subdomains: ['a', 'b', 'c'],
-                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
-                continuousWorld: true
+        layers: [
+          {
+              name: 'OpenStreetMap',
+              active: true,
+              source: {
+                  type: 'OSM'
               }
-            }
           }
-        },
-        map_center: {
-          lat: 5.6,
-          lng: 3.9,
-          zoom: 0
+        ],
+        center: {
+          lat: 0.0,
+          lon: 0.0,
+          zoom: 1
         },
         defaults: {
-          zoomControl: false
+          interactions: {
+            mouseWheelZoom: true
+          },
+          controls: {
+              zoom: {
+                  position: 'topleft'
+              }
+          }
         }
       });
 
-
-      var leafletData = $injector.get('leafletData'),
-          map = leafletData.getMap('filter-map');
-
-      map.then(function(map){
-        map.on('moveend', function(){
-          $scope.query['extent'] = map.getBounds().toBBoxString();
+      var olData = $injector.get('olData'),
+          map = olData.getMap('filter-map');
+      
+      map.then(function(map) {
+        map.on('moveend', function () {
+          var glbox = map.getView().calculateExtent(map.getSize()); // doesn't look as expected.
+          var box = ol.proj.transformExtent(glbox, 'EPSG:3857', 'EPSG:4326');
+          $scope.query['extent'] = box.toString();
           query_api($scope.query);
         });
       });
@@ -669,8 +723,8 @@
       $('#_extent_filter').click(function(evt) {
           showMap = !showMap
         if (showMap){
-          leafletData.getMap().then(function(map) {
-            map.invalidateSize();
+          olData.getMap().then(function(map) {
+            map.updateSize();
           });
         }
       });

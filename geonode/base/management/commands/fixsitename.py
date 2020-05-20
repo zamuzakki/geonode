@@ -20,7 +20,7 @@
 
 from django.core.management.base import BaseCommand
 from django.contrib.sites.models import Site
-from urlparse import urlsplit
+from urllib.parse import urlsplit
 
 
 class Command(BaseCommand):
@@ -32,8 +32,8 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         from django.conf import settings
         name = getattr(settings, 'SITENAME', 'GeoNode')
-        url = getattr(settings, 'SITEURL')
-
+        site_url = getattr(settings, 'SITEURL')
+        url = site_url.rstrip('/') if site_url.startswith('http') else site_url
         parsed = urlsplit(url)
 
         site = Site.objects.get_current()

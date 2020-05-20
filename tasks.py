@@ -1,72 +1,109 @@
 import json
-import logging
 import os
-import re
+import ast
 
-import docker
-
-from invoke import run, task
+from invoke import task
 
 BOOTSTRAP_IMAGE_CHEIP = 'codenvy/che-ip:nightly'
 
 
 @task
 def waitfordbs(ctx):
-    print "**************************databases*******************************"
+    print("**************************databases*******************************")
     ctx.run("/usr/bin/wait-for-databases {0}".format('db'), pty=True)
 
 
 @task
 def update(ctx):
-    print "***************************initial*********************************"
+    print("***************************initial*********************************")
     ctx.run("env", pty=True)
     pub_ip = _geonode_public_host_ip()
-    print "Public Hostname or IP is {0}".format(pub_ip)
+    print("Public Hostname or IP is {0}".format(pub_ip))
     pub_port = _geonode_public_port()
-    print "Public PORT is {0}".format(pub_port)
+    print("Public PORT is {0}".format(pub_port))
+    pub_protocol = 'https' if pub_port == '443' else 'http'
+    if pub_protocol == 'https' or pub_port == '80':
+        pub_port = None
     db_url = _update_db_connstring()
     geodb_url = _update_geodb_connstring()
+    override_env = "$HOME/.override_env"
     envs = {
-        "public_fqdn": "{0}:{1}".format(pub_ip, pub_port),
+        "public_protocol": pub_protocol,
+        "public_fqdn": "{0}{1}".format(pub_ip, ':' + pub_port if pub_port else ''),
         "public_host": "{0}".format(pub_ip),
         "dburl": db_url,
         "geodburl": geodb_url,
-        "override_fn": "$HOME/.override_env"
+        "override_fn": override_env
     }
-    ctx.run("echo export GEOSERVER_PUBLIC_LOCATION=\
-http://{public_fqdn}/geoserver/ >> {override_fn}".format(**envs), pty=True)
-    ctx.run("echo export SITEURL=\
-http://{public_fqdn}/ >> {override_fn}".format(**envs), pty=True)
-    ctx.run("echo export ALLOWED_HOSTS=\
-\"\\\"['{public_fqdn}', '{public_host}', 'django', 'geonode',]\\\"\" \
->> {override_fn}".format(**envs), pty=True)
-    ctx.run("echo export DATABASE_URL=\
+    if os.environ.get(
+        'GEONODE_LB_HOST_IP'
+    ) and os.environ.get(
+        'GEONODE_LB_PORT'
+    ):
+        ctx.run("echo export GEOSERVER_PUBLIC_LOCATION=\
+{public_protocol}://{public_fqdn}/geoserver/ >> {override_fn}".format(**envs), pty=True)
+        ctx.run("echo export GEOSERVER_WEB_UI_LOCATION=\
+{public_protocol}://{public_fqdn}/geoserver/ >> {override_fn}".format(**envs), pty=True)
+        ctx.run("echo export SITEURL=\
+{public_protocol}://{public_fqdn}/ >> {override_fn}".format(**envs), pty=True)
+
+    try:
+        current_allowed = ast.literal_eval(
+            os.getenv('ALLOWED_HOSTS') or "[\
+'{public_fqdn}', '{public_host}', 'localhost', 'django', 'geonode',\
+]".format(**envs))
+    except ValueError:
+        current_allowed = []
+    current_allowed.extend(
+        ['{}'.format(pub_ip), '{}:{}'.format(pub_ip, pub_port)]
+    )
+    allowed_hosts = ['"{}"'.format(c) for c in current_allowed]
+    for host in ['django', 'geonode']:
+        if host not in allowed_hosts:
+            allowed_hosts.extend(['{}'.format(host)])
+
+    ctx.run('echo export ALLOWED_HOSTS="\\"{}\\"" >> {}'.format(
+        allowed_hosts, override_env
+    ), pty=True)
+
+    if not os.environ.get('DATABASE_URL'):
+        ctx.run("echo export DATABASE_URL=\
 {dburl} >> {override_fn}".format(**envs), pty=True)
-    ctx.run("echo export GEODATABASE_URL=\
+    if not os.environ.get('GEODATABASE_URL'):
+        ctx.run("echo export GEODATABASE_URL=\
 {geodburl} >> {override_fn}".format(**envs), pty=True)
     ctx.run("source $HOME/.override_env", pty=True)
-    print "****************************final**********************************"
+    print("****************************final**********************************")
     ctx.run("env", pty=True)
 
 
 @task
 def migrations(ctx):
-    print "**************************migrations*******************************"
+    print("**************************migrations*******************************")
     ctx.run("django-admin.py migrate --noinput --settings={0}".format(
         _localsettings()
     ), pty=True)
 
 
 @task
+def statics(ctx):
+    print("**************************migrations*******************************")
+    ctx.run('mkdir -p /mnt/volumes/statics/{static,uploads}')
+    ctx.run("python manage.py collectstatic --noinput --clear --settings={0}".format(
+        _localsettings()
+    ), pty=True)
+
+
+@task
 def prepare(ctx):
-    print "**********************prepare fixture***************************"
+    print("**********************prepare fixture***************************")
     ctx.run("rm -rf /tmp/default_oauth_apps_docker.json", pty=True)
     _prepare_oauth_fixture()
 
 
 @task
 def fixtures(ctx):
-    print "**************************fixtures********************************"
+    print("**************************fixtures********************************")
     ctx.run("django-admin.py loaddata sample_admin \
 --settings={0}".format(_localsettings()), pty=True)
     ctx.run("django-admin.py loaddata /tmp/default_oauth_apps_docker.json \
@@ -75,36 +112,16 @@ def fixtures(ctx):
 --settings={0}".format(_localsettings()), pty=True)
 
 
-def _docker_host_ip():
-    client = docker.from_env()
-    ip_list = client.containers.run(BOOTSTRAP_IMAGE_CHEIP,
-                                    network_mode='host'
-                                    ).split("\n")
-    if len(ip_list) > 1:
-        print("Docker daemon is running on more than one \
-address {0}".format(ip_list))
-        print("Only the first address:{0} will be returned!".format(
-            ip_list[0]
-        ))
-    else:
-        print("Docker daemon is running at the following \
-address {0}".format(ip_list[0]))
-    return ip_list[0]
+@task
+def initialized(ctx):
+    print("**************************init file********************************")
+    ctx.run('date > /mnt/volumes/statics/geonode_init.lock')
 
 
-def _container_exposed_port(component, instname):
-    client = docker.from_env()
-    ports_dict = json.dumps(
-        [c.attrs['Config']['ExposedPorts'] for c in client.containers.list(
-            filters={
-                'label': 'org.geonode.component={0}'.format(component),
-                'status': 'running'
-            }
-        ) if '{0}'.format(instname) in c.name][0]
-    )
-    for key in json.loads(ports_dict):
-        port = re.split('/tcp', key)[0]
-    return port
+@task
+def devrequirements(ctx):
+    print("*********************install dev requirements**********************")
+    ctx.run('pip install -r requirements_dev.txt --upgrade')
 
 
 def _update_db_connstring():
@@ -137,35 +154,34 @@ def _localsettings():
 
 
 def _geonode_public_host_ip():
-    gn_pub_hostip = os.getenv('GEONODE_LB_HOST_IP', '')
-    if not gn_pub_hostip:
-        gn_pub_hostip = _docker_host_ip()
+    gn_pub_hostip = os.getenv('GEONODE_LB_HOST_IP', 'localhost')
     return gn_pub_hostip
 
 
 def _geonode_public_port():
-    gn_pub_port = os.getenv('GEONODE_LB_PORT', '')
-    if not gn_pub_port:
-        gn_pub_port = _container_exposed_port(
-            'nginx',
-            os.getenv('GEONODE_INSTANCE_NAME', 'geonode')
-        )
-    return gn_pub_port
+    gn_pub_port = os.getenv('GEONODE_LB_PORT', '80')
+    return str(gn_pub_port)
 
 
 def _prepare_oauth_fixture():
     pub_ip = _geonode_public_host_ip()
-    print "Public Hostname or IP is {0}".format(pub_ip)
+    print("Public Hostname or IP is {0}".format(pub_ip))
     pub_port = _geonode_public_port()
-    print "Public PORT is {0}".format(pub_port)
+    print("Public PORT is {0}".format(pub_port))
+    pub_protocol = 'https' if pub_port == '443' else 'http'
+    if pub_protocol == 'https' or pub_port == '80':
+        pub_port = None
     default_fixture = [
         {
             "model": "oauth2_provider.application",
             "pk": 1001,
             "fields": {
                 "skip_authorization": True,
-                "redirect_uris": "http://{0}:{1}/geoserver/index.html".format(
-                    pub_ip, pub_port
+                "created": "2018-05-31T10:00:31.661Z",
+                "updated": "2018-05-31T11:30:31.245Z",
+                "algorithm": "RS256",
+                "redirect_uris": "{0}://{1}{2}/geoserver/index.html".format(
+                    pub_protocol, pub_ip, ':' + pub_port if pub_port else ''
                 ),
                 "name": "GeoServer",
                 "authorization_grant_type": "authorization-code",

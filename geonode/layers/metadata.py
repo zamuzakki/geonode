@@ -24,7 +24,7 @@
 # Standard Modules
 import logging
 import datetime
-from lxml import etree
+from defusedxml import lxml as dlxml
 
 # Geonode functionality
 from geonode import GeoNodeException
@@ -32,6 +32,7 @@ from geonode import GeoNodeException
 from owslib.csw import CswRecord
 from owslib.iso import MD_Metadata
 from owslib.fgdc import Metadata
+from django.utils import timezone
 
 LOGGER = logging.getLogger(__name__)
 
@@ -41,7 +42,7 @@ def set_metadata(xml):
 
     # check if document is XML
     try:
-        exml = etree.fromstring(xml)
+        exml = dlxml.fromstring(xml.encode())
     except Exception as err:
         raise GeoNodeException(
             'Uploaded XML document is not XML: %s' % str(err))
@@ -50,7 +51,7 @@ def set_metadata(xml):
     tagname = get_tagname(exml)
 
     if tagname == 'GetRecordByIdResponse':  # strip CSW element
-        LOGGER.info('stripping CSW root element')
+        LOGGER.debug('stripping CSW root element')
         exml = exml.getchildren()[0]
         tagname = get_tagname(exml)
 
@@ -63,7 +64,7 @@ def set_metadata(xml):
     else:
         raise RuntimeError('Unsupported metadata format')
     if not vals.get("date"):
-        vals["date"] = datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        vals["date"] = datetime.datetime.now(timezone.get_current_timezone()).strftime("%Y-%m-%dT%H:%M:%S")
 
     return [identifier, vals, regions, keywords]
 

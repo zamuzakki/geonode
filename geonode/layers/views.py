@@ -17,41 +17,43 @@
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 #########################################################################
-
+import re
 import os
 import sys
 import logging
 import shutil
 import base64
 import traceback
-import uuid
+from types import TracebackType
 import decimal
-import re
+import pickle
+import six
+from django.db.models import Q
+from celery.exceptions import TimeoutError
+from urllib.parse import quote
 
 from django.contrib.gis.geos import GEOSGeometry
+from django.core.exceptions import PermissionDenied
 from django.template.response import TemplateResponse
 from requests import Request
 from itertools import chain
 from six import string_types
 from owslib.wfs import WebFeatureService
-from owslib.feature.schema import get_schema
 
-from guardian.shortcuts import get_perms
+from guardian.shortcuts import get_perms, get_objects_for_user
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth import get_user_model
-from django.core.urlresolvers import reverse
+from django.urls import reverse
 from django.http import HttpResponse, HttpResponseRedirect
 from django.shortcuts import render
 from django.conf import settings
 from django.utils.translation import ugettext as _
+from django.views.decorators.http import require_http_methods
 
-from geonode import geoserver, qgis_server
+from dal import autocomplete
 
-try:
-    import json
-except ImportError:
-    from django.utils import simplejson as json
+import json
 from django.utils.html import escape
 from django.template.defaultfilters import slugify
 from django.forms.models import inlineformset_factory
@@ -59,50 +61,76 @@ from django.db import transaction
 from django.db.models import F
 from django.forms.utils import ErrorList
 
-from geonode.services.models import Service
-from geonode.layers.forms import LayerForm, LayerUploadForm, NewLayerUploadForm, LayerAttributeForm
-from geonode.base.forms import CategoryForm, TKeywordForm
-from geonode.layers.models import Layer, Attribute, UploadSession
-from geonode.base.enumerations import CHARSETS
-from geonode.base.models import TopicCategory
-from geonode.groups.models import GroupProfile
-
-from geonode.utils import (resolve_object,
-                           default_map_config,
-                           check_ogc_backend,
-                           llbbox_to_mercator,
-                           bbox_to_projection,
-                           GXPLayer,
-                           GXPMap)
-from geonode.layers.utils import file_upload, is_raster, is_vector
-from geonode.people.forms import ProfileForm, PocForm
-from geonode.security.views import _perms_info_json
-from geonode.documents.models import get_related_documents
-from geonode.utils import build_social_links
+from geonode.base.auth import get_or_create_token
+from geonode.base.forms import CategoryForm, TKeywordForm, BatchPermissionsForm
 from geonode.base.views import batch_modify
-from geonode.base.models import Thesaurus
+from geonode.base.models import (
+    Thesaurus,
+    TopicCategory)
+from geonode.base.enumerations import CHARSETS
+
+from geonode.layers.forms import (
+    LayerForm,
+    LayerUploadForm,
+    NewLayerUploadForm,
+    LayerAttributeForm)
+from geonode.layers.models import (
+    Layer,
+    Attribute,
+    UploadSession)
+from geonode.layers.utils import (
+    file_upload,
+    is_raster,
+    is_vector,
+    set_layers_permissions)
+
 from geonode.maps.models import Map
-from geonode.geoserver.helpers import (cascading_delete,
-                                       gs_catalog,
-                                       ogc_server_settings,
-                                       set_layer_style)
+from geonode.services.models import Service
+from geonode.monitoring import register_event
+from geonode.monitoring.models import EventType
+from geonode.groups.models import GroupProfile
+from geonode.security.views import _perms_info_json
+from geonode.people.forms import ProfileForm, PocForm
+from geonode.documents.models import get_related_documents
+from geonode import geoserver, qgis_server
+from geonode.security.utils import get_visible_resources
+
+from geonode.utils import (
+    resolve_object,
+    default_map_config,
+    check_ogc_backend,
+    llbbox_to_mercator,
+    bbox_to_projection,
+    build_social_links,
+    GXPLayer,
+    GXPMap)
+
 from .tasks import delete_layer
 
+from geonode.geoserver.helpers import (ogc_server_settings,
+                                       set_layer_style)  # cascading_delete
+from geonode.base.utils import ManageResourceOwnerPermissions
+
 if check_ogc_backend(geoserver.BACKEND_PACKAGE):
-    from geonode.geoserver.helpers import _render_thumbnail
+    from geonode.geoserver.helpers import (_render_thumbnail,
+                                           _prepare_thumbnail_body_from_opts,
+                                           gs_catalog)
 if check_ogc_backend(qgis_server.BACKEND_PACKAGE):
     from geonode.qgis_server.models import QGISServerLayer
+
 CONTEXT_LOG_FILE = ogc_server_settings.LOG_FILE
 
 logger = logging.getLogger("geonode.layers.views")
 
 DEFAULT_SEARCH_BATCH_SIZE = 10
 MAX_SEARCH_BATCH_SIZE = 25
-GENERIC_UPLOAD_ERROR = _("There was an error while attempting to upload your data. \
+GENERIC_UPLOAD_ERROR = _(
+    "There was an error while attempting to upload your data. \
 Please try again, or contact and administrator if the problem continues.")
 
 METADATA_UPLOADED_PRESERVE_ERROR = _("Note: this layer's orginal metadata was \
-populated and preserved by importing a metadata XML file. This metadata cannot be edited.")
+populated and preserved by importing a metadata XML file. This metadata cannot be edited."
+                                     )
 
 _PERMISSION_MSG_DELETE = _("You are not permitted to delete this layer")
 _PERMISSION_MSG_GENERIC = _('You do not have permissions for this layer.')
@@ -129,21 +157,46 @@ def _resolve_layer(request, alternate, permission='base.view_resourcebase',
     Resolve the layer by the provided typename (which may include service name) and check the optional permission.
     """
     service_typename = alternate.split(":", 1)
-
     if Service.objects.filter(name=service_typename[0]).exists():
-        service = Service.objects.filter(name=service_typename[0])
+        query = {
+            'alternate': service_typename[1]
+        }
+        if len(service_typename) > 1:
+            query['store'] = service_typename[0]
+        else:
+            query['storeType'] = 'remoteStore'
         return resolve_object(
             request,
             Layer,
-            {
-                'alternate': service_typename[1] if service[0].method != "C" else alternate},
+            query,
             permission=permission,
             permission_msg=msg,
             **kwargs)
     else:
+        if len(service_typename) > 1 and ':' in service_typename[1]:
+            if service_typename[0]:
+                query = {
+                    'store': service_typename[0],
+                    'alternate': service_typename[1]
+                }
+            else:
+                query = {
+                    'alternate': service_typename[1]
+                }
+        else:
+            query = {'alternate': alternate}
+        test_query = Layer.objects.filter(**query)
+        if test_query.count() > 1 and test_query.exclude(storeType='remoteStore').count() == 1:
+            query = {
+                'id': test_query.exclude(storeType='remoteStore').last().id
+            }
+        elif test_query.count() > 1:
+            query = {
+                'id': test_query.last().id
+            }
         return resolve_object(request,
                               Layer,
-                              {'alternate': alternate},
+                              query,
                               permission=permission,
                               permission_msg=msg,
                               **kwargs)
@@ -168,6 +221,7 @@ def layer_upload(request, template='upload/layer_upload.html'):
         tempdir = None
         saved_layer = None
         errormsgs = []
+        input_charset = None
         out = {'success': False}
         if form.is_valid():
             title = form.cleaned_data["layer_title"]
@@ -189,6 +243,9 @@ def layer_upload(request, template='upload/layer_upload.html'):
             else:
                 abstract = "No abstract provided."
 
+            # charset
+            input_charset = form.cleaned_data["charset"]
+
             try:
                 # Moved this inside the try/except block because it can raise
                 # exceptions when unicode characters are present.
@@ -200,7 +257,7 @@ def layer_upload(request, template='upload/layer_upload.html'):
                         name=name,
                         user=request.user,
                         overwrite=False,
-                        charset=form.cleaned_data["charset"],
+                        charset=input_charset,
                         abstract=abstract,
                         title=title,
                         metadata_uploaded_preserve=form.cleaned_data[
@@ -209,7 +266,7 @@ def layer_upload(request, template='upload/layer_upload.html'):
                 else:
                     saved_layer = Layer.objects.get(alternate=title)
                     if not saved_layer:
-                        msg = 'Failed to process.  Could not find matching layer.'
+                        msg = 'Failed to process. Could not find matching layer.'
                         raise Exception(msg)
                     sld = open(base_file).read()
                     set_layer_style(saved_layer, title, base_file, sld)
@@ -218,16 +275,17 @@ def layer_upload(request, template='upload/layer_upload.html'):
                 exception_type, error, tb = sys.exc_info()
                 logger.exception(e)
                 out['success'] = False
+                out['errormsgs'] = _('Failed to upload the layer')
                 try:
-                    out['errors'] = u''.join(error).encode('utf-8')
-                except BaseException:
+                    out['errors'] = ''.join(error)
+                except Exception:
                     try:
                         out['errors'] = str(error)
-                    except BaseException:
+                    except Exception:
                         try:
                             tb = traceback.format_exc()
                             out['errors'] = tb
-                        except BaseException:
+                        except Exception:
                             pass
 
                 # Assign the error message to the latest UploadSession from
@@ -236,36 +294,52 @@ def layer_upload(request, template='upload/layer_upload.html'):
                     user=request.user).order_by('-date')
                 if latest_uploads.count() > 0:
                     upload_session = latest_uploads[0]
-                    upload_session.error = str(error)
-                    upload_session.traceback = traceback.format_exc(tb)
+                    # Ref issue #4232
+                    if not isinstance(error, TracebackType):
+                        try:
+                            upload_session.error = pickle.dumps(error).decode("utf-8", "replace")
+                        except Exception:
+                            err_msg = 'The error could not be parsed'
+                            upload_session.error = err_msg
+                            logger.error("TypeError: can't pickle traceback objects")
+                    else:
+                        err_msg = 'The error could not be parsed'
+                        upload_session.error = err_msg
+                        logger.error("TypeError: can't pickle traceback objects")
+                    try:
+                        upload_session.traceback = traceback.format_exc(tb)
+                    except TypeError:
+                        upload_session.traceback = traceback.format_tb(tb)
                     upload_session.context = log_snippet(CONTEXT_LOG_FILE)
                     upload_session.save()
                     out['traceback'] = upload_session.traceback
                     out['context'] = upload_session.context
                     out['upload_session'] = upload_session.id
             else:
-                out['success'] = True
-                if hasattr(saved_layer, 'info'):
-                    out['info'] = saved_layer.info
-                out['url'] = reverse(
-                    'layer_detail', args=[
-                        saved_layer.service_typename])
-                if hasattr(saved_layer, 'bbox_string'):
-                    out['bbox'] = saved_layer.bbox_string
-                if hasattr(saved_layer, 'srid'):
-                    out['crs'] = {
-                        'type': 'name',
-                        'properties': saved_layer.srid
-                    }
-                out['ogc_backend'] = settings.OGC_SERVER['default']['BACKEND']
-                upload_session = saved_layer.upload_session
-                if upload_session:
-                    upload_session.processed = True
-                    upload_session.save()
-                permissions = form.cleaned_data["permissions"]
-                if permissions is not None and len(permissions.keys()) > 0:
-                    saved_layer.set_permissions(permissions)
-                saved_layer.handle_moderated_uploads()
+                # Prevent calls to None
+                if saved_layer:
+                    out['success'] = True
+                    if hasattr(saved_layer, 'info'):
+                        out['info'] = saved_layer.info
+                    out['url'] = reverse(
+                        'layer_detail', args=[
+                            saved_layer.service_typename])
+                    if hasattr(saved_layer, 'bbox_string'):
+                        out['bbox'] = saved_layer.bbox_string
+                    if hasattr(saved_layer, 'srid'):
+                        out['crs'] = {
+                            'type': 'name',
+                            'properties': saved_layer.srid
+                        }
+                    out['ogc_backend'] = settings.OGC_SERVER['default']['BACKEND']
+                    upload_session = saved_layer.upload_session
+                    if upload_session:
+                        upload_session.processed = True
+                        upload_session.save()
+                    permissions = form.cleaned_data["permissions"]
+                    if permissions is not None and len(permissions.keys()) > 0:
+                        saved_layer.set_permissions(permissions)
+                    saved_layer.handle_moderated_uploads()
             finally:
                 if tempdir is not None:
                     shutil.rmtree(tempdir)
@@ -276,13 +350,38 @@ def layer_upload(request, template='upload/layer_upload.html'):
             out['errormsgs'] = errormsgs
         if out['success']:
             status_code = 200
+            register_event(request, 'upload', saved_layer)
         else:
             status_code = 400
-        if settings.MONITORING_ENABLED:
-            if saved_layer or name:
-                layer_name = saved_layer.alternate if hasattr(
-                    saved_layer, 'alternate') else name
-                request.add_resource('layer', layer_name)
+
+        # null-safe charset
+        layer_charset = 'UTF-8'
+        if saved_layer:
+            layer_charset = getattr(saved_layer, 'charset', layer_charset)
+        elif input_charset and 'undefined' not in input_charset:
+            layer_charset = input_charset
+
+        _keys = ['info', 'errors']
+        for _k in _keys:
+            if _k in out:
+                if isinstance(out[_k], string_types):
+                    out[_k] = out[_k].encode(layer_charset, 'surrogateescape').decode('utf-8', 'surrogateescape')
+                elif isinstance(out[_k], dict):
+                    for key, value in out[_k].items():
+                        try:
+                            item = out[_k][key]
+                            # Ref issue #4241
+                            if isinstance(item, ErrorList):
+                                out[_k][key] = item.as_text().encode(
+                                    layer_charset, 'surrogateescape').decode('utf-8', 'surrogateescape')
+                            else:
+                                out[_k][key] = item.encode(layer_charset, 'surrogateescape').decode(
+                                    'utf-8', 'surrogateescape')
+                            out[_k][key.encode(layer_charset, 'surrogateescape').decode(
+                                'utf-8', 'surrogateescape')] = out[_k].pop(key)
+                        except Exception as e:
+                            logger.exception(e)
+
         return HttpResponse(
             json.dumps(out),
             content_type='application/json',
@@ -296,16 +395,11 @@ def layer_detail(request, layername, template='layers/layer_detail.html'):
         'base.view_resourcebase',
         _PERMISSION_MSG_VIEW)
 
-    # assert False, str(layer_bbox)
-    config = layer.attribute_config()
+    permission_manager = ManageResourceOwnerPermissions(layer)
+    permission_manager.set_owner_permissions_according_to_workflow()
 
-    # Add required parameters for GXP lazy-loading
-    layer_bbox = layer.bbox[0:4]
-    bbox = layer_bbox[:]
-    bbox[0] = float(layer_bbox[0])
-    bbox[1] = float(layer_bbox[2])
-    bbox[2] = float(layer_bbox[1])
-    bbox[3] = float(layer_bbox[3])
+    # Add metadata_author or poc if missing
+    layer.add_missing_metadata_author_or_poc()
 
     def decimal_encode(bbox):
         import decimal
@@ -314,10 +408,9 @@ def layer_detail(request, layername, template='layers/layer_detail.html'):
             if isinstance(o, decimal.Decimal):
                 o = (str(o) for o in [o])
             _bbox.append(o)
-        return _bbox
+        return [_bbox[0], _bbox[2], _bbox[1], _bbox[3]]
 
     def sld_definition(style):
-        from urllib import quote
         _sld = {
             "title": style.sld_title or style.name,
             "legend": {
@@ -332,16 +425,27 @@ def layer_detail(request, layername, template='layers/layer_detail.html'):
         }
         return _sld
 
+    # assert False, str(layer_bbox)
+    config = layer.attribute_config()
     if hasattr(layer, 'srid'):
         config['crs'] = {
             'type': 'name',
             'properties': layer.srid
         }
     # Add required parameters for GXP lazy-loading
+    layer_bbox = layer.bbox[0:4]
+    # Must be in the form xmin, ymin, xmax, ymax
+    bbox = [
+        float(layer_bbox[0]), float(layer_bbox[2]),
+        float(layer_bbox[1]), float(layer_bbox[3])
+    ]
+
+    # Add required parameters for GXP lazy-loading
     attribution = "%s %s" % (layer.owner.first_name,
                              layer.owner.last_name) if layer.owner.first_name or layer.owner.last_name else str(
         layer.owner)
     srs = getattr(settings, 'DEFAULT_MAP_CRS', 'EPSG:3857')
+    srs_srid = int(srs.split(":")[1]) if srs != "EPSG:900913" else 3857
     config["attribution"] = "<span class='gx-attribution-title'>%s</span>" % attribution
     config["format"] = getattr(
         settings, 'DEFAULT_LAYER_FORMAT', 'image/png')
@@ -349,14 +453,16 @@ def layer_detail(request, layername, template='layers/layer_detail.html'):
     config["wrapDateLine"] = True
     config["visibility"] = True
     config["srs"] = srs
-    config["bbox"] = decimal_encode(
-        bbox_to_projection([float(coord) for coord in layer_bbox] + [layer.srid, ],
-                           target_srid=int(srs.split(":")[1]))[:4])
+    config["bbox"] = bbox_to_projection([float(coord) for coord in layer_bbox] + [layer.srid, ],
+                                        target_srid=int(srs.split(":")[1]))[:4]
+
     config["capability"] = {
         "abstract": layer.abstract,
+        "store": layer.store,
         "name": layer.alternate,
         "title": layer.title,
         "queryable": True,
+        "storeType": layer.storeType,
         "bbox": {
             layer.srid: {
                 "srs": layer.srid,
@@ -364,15 +470,20 @@ def layer_detail(request, layername, template='layers/layer_detail.html'):
             },
             srs: {
                 "srs": srs,
-                "bbox": decimal_encode(
-                    bbox_to_projection([float(coord) for coord in layer_bbox] + [layer.srid, ],
-                                       target_srid=int(srs.split(":")[1]))[:4])
+                "bbox": bbox_to_projection([float(coord) for coord in layer_bbox] + [layer.srid, ],
+                                           target_srid=srs_srid)[:4]
             },
             "EPSG:4326": {
                 "srs": "EPSG:4326",
                 "bbox": decimal_encode(bbox) if layer.srid == 'EPSG:4326' else
-                decimal_encode(bbox_to_projection(
-                    [float(coord) for coord in layer_bbox] + [layer.srid, ], target_srid=4326)[:4])
+                bbox_to_projection(
+                    [float(coord) for coord in layer_bbox] + [layer.srid, ], target_srid=4326)[:4]
+            },
+            "EPSG:900913": {
+                "srs": "EPSG:900913",
+                "bbox": decimal_encode(bbox) if layer.srid == 'EPSG:900913' else
+                bbox_to_projection(
+                    [float(coord) for coord in layer_bbox] + [layer.srid, ], target_srid=3857)[:4]
             }
         },
         "srs": {
@@ -397,80 +508,17 @@ def layer_detail(request, layername, template='layers/layer_detail.html'):
         "prefix": layer.alternate.split(":")[0] if ":" in layer.alternate else "",
         "keywords": [k.name for k in layer.keywords.all()] if layer.keywords else [],
         "llbbox": decimal_encode(bbox) if layer.srid == 'EPSG:4326' else
-        decimal_encode(bbox_to_projection(
-            [float(coord) for coord in layer_bbox] + [layer.srid, ], target_srid=4326)[:4])
+        bbox_to_projection(
+            [float(coord) for coord in layer_bbox] + [layer.srid, ], target_srid=4326)[:4]
     }
 
-    if layer.storeType == "remoteStore":
-        service = layer.remote_service
-        source_params = {
-            "ptype": service.ptype,
-            "remote": True,
-            "url": service.service_url,
-            "name": service.name,
-            "title": "[R] %s" % service.title}
-        maplayer = GXPLayer(
-            name=layer.alternate,
-            ows_url=layer.ows_url,
-            layer_params=json.dumps(config),
-            source_params=json.dumps(source_params))
-    else:
-        maplayer = GXPLayer(
-            name=layer.alternate,
-            ows_url=layer.ows_url,
-            layer_params=json.dumps(config))
-
-    # Update count for popularity ranking,
-    # but do not includes admins or resource owners
-    layer.view_count_up(request.user)
-
-    # center/zoom don't matter; the viewer will center on the layer bounds
-    map_obj = GXPMap(
-        projection=getattr(
-            settings,
-            'DEFAULT_MAP_CRS',
-            'EPSG:900913'))
-
-    NON_WMS_BASE_LAYERS = [
-        la for la in default_map_config(request)[1] if la.ows_url is None]
-
-    metadata = layer.link_set.metadata().filter(
-        name__in=settings.DOWNLOAD_FORMATS_METADATA)
-
     granules = None
-    all_granules = None
     all_times = None
+    all_granules = None
     filter = None
-    if layer.is_mosaic:
-        try:
-            cat = gs_catalog
-            cat._cache.clear()
-            store = cat.get_store(layer.name)
-            coverages = cat.mosaic_coverages(store)
-
-            filter = None
-            try:
-                if request.GET["filter"]:
-                    filter = request.GET["filter"]
-            except BaseException:
-                pass
-
-            offset = 10 * (request.page - 1)
-            granules = cat.mosaic_granules(
-                coverages['coverages']['coverage'][0]['name'],
-                store,
-                limit=10,
-                offset=offset,
-                filter=filter)
-            all_granules = cat.mosaic_granules(
-                coverages['coverages']['coverage'][0]['name'], store, filter=filter)
-        except BaseException:
-            granules = {"features": []}
-            all_granules = {"features": []}
-
     if check_ogc_backend(geoserver.BACKEND_PACKAGE):
-        from geonode.geoserver.views import get_capabilities
         if layer.has_time:
+            from geonode.geoserver.views import get_capabilities
             workspace, layername = layer.alternate.split(
                 ":") if ":" in layer.alternate else (None, layer.alternate)
             # WARNING Please make sure to have enabled DJANGO CACHE as per
@@ -480,10 +528,14 @@ def layer_detail(request, layername, template='layers/layer_detail.html'):
             if wms_capabilities_resp.status_code >= 200 and wms_capabilities_resp.status_code < 400:
                 wms_capabilities = wms_capabilities_resp.getvalue()
                 if wms_capabilities:
-                    import xml.etree.ElementTree as ET
-                    e = ET.fromstring(wms_capabilities)
+                    from defusedxml import lxml as dlxml
+                    namespaces = {'wms': 'http://www.opengis.net/wms',
+                                  'xlink': 'http://www.w3.org/1999/xlink',
+                                  'xsi': 'http://www.w3.org/2001/XMLSchema-instance'}
+
+                    e = dlxml.fromstring(wms_capabilities)
                     for atype in e.findall(
-                            "Capability/Layer/Layer[Name='%s']/Extent" % (layername)):
+                            "./[wms:Name='%s']/wms:Dimension[@name='time']" % (layer.alternate), namespaces):
                         dim_name = atype.get('name')
                         if dim_name:
                             dim_name = str(dim_name).lower()
@@ -492,6 +544,50 @@ def layer_detail(request, layername, template='layers/layer_detail.html'):
                                 if dim_values:
                                     all_times = dim_values.split(",")
                                     break
+            if all_times:
+                config["capability"]["dimensions"] = {
+                    "time": {
+                        "name": "time",
+                        "units": "ISO8601",
+                        "unitsymbol": None,
+                        "nearestVal": False,
+                        "multipleVal": False,
+                        "current": False,
+                        "default": "current",
+                        "values": all_times
+                    }
+                }
+        if layer.is_mosaic:
+            try:
+                cat = gs_catalog
+                cat._cache.clear()
+                store = cat.get_store(layer.name)
+                coverages = cat.mosaic_coverages(store)
+                try:
+                    if request.GET["filter"]:
+                        filter = request.GET["filter"]
+                except Exception:
+                    pass
+
+                offset = 10 * (request.page - 1)
+                granules = cat.mosaic_granules(
+                    coverages['coverages']['coverage'][0]['name'],
+                    store,
+                    limit=10,
+                    offset=offset,
+                    filter=filter)
+                all_granules = cat.mosaic_granules(
+                    coverages['coverages']['coverage'][0]['name'], store, filter=filter)
+            except Exception:
+                granules = {"features": []}
+                all_granules = {"features": []}
+
+    # Call this first in order to be sure "perms_list" is correct
+    permissions_json = _perms_info_json(layer)
+
+    perms_list = get_perms(
+        request.user,
+        layer.get_self_resource()) + get_perms(request.user, layer)
 
     group = None
     if layer.group:
@@ -504,11 +600,58 @@ def layer_detail(request, layername, template='layers/layer_detail.html'):
     if 'show_popup' in request.GET and request.GET["show_popup"]:
         show_popup = True
 
+    if layer.storeType == "remoteStore":
+        service = layer.remote_service
+        source_params = {}
+        if service.type in ('REST_MAP', 'REST_IMG'):
+            source_params = {
+                "ptype": service.ptype,
+                "remote": True,
+                "url": service.service_url,
+                "name": service.name,
+                "title": "[R] %s" % service.title}
+        maplayer = GXPLayer(
+            name=layer.alternate,
+            ows_url=layer.ows_url,
+            layer_params=json.dumps(config),
+            source_params=json.dumps(source_params)
+        )
+    else:
+        maplayer = GXPLayer(
+            name=layer.alternate,
+            ows_url=layer.ows_url,
+            layer_params=json.dumps(config)
+        )
+    # Update count for popularity ranking,
+    # but do not includes admins or resource owners
+    layer.view_count_up(request.user)
+    # center/zoom don't matter; the viewer will center on the layer bounds
+    map_obj = GXPMap(
+        sender=Layer,
+        projection=getattr(
+            settings,
+            'DEFAULT_MAP_CRS',
+            'EPSG:3857'))
+    NON_WMS_BASE_LAYERS = [
+        la for la in default_map_config(request)[1] if la.ows_url is None]
+
+    metadata = layer.link_set.metadata().filter(
+        name__in=settings.DOWNLOAD_FORMATS_METADATA)
+
+    access_token = None
+    if request and request.user:
+        access_token = get_or_create_token(request.user)
+        if access_token and not access_token.is_expired():
+            access_token = access_token.token
+        else:
+            access_token = None
+
     context_dict = {
+        'access_token': access_token,
         'resource': layer,
         'group': group,
-        'perms_list': get_perms(request.user, layer.get_self_resource()),
-        "permissions_json": _perms_info_json(layer),
+        'perms_list': perms_list,
+        "permissions_json": permissions_json,
         "documents": get_related_documents(layer),
         "metadata": metadata,
         "is_layer": True,
@@ -519,44 +662,42 @@ def layer_detail(request, layername, template='layers/layer_detail.html'):
         "show_popup": show_popup,
         "filter": filter,
         "storeType": layer.storeType,
-        "online": (layer.remote_service.probe == 200) if layer.storeType == "remoteStore" else True
+        # "online": (layer.remote_service.probe == 200) if layer.storeType == "remoteStore" else True
     }
 
-    if 'access_token' in request.session:
-        access_token = request.session['access_token']
-    else:
-        u = uuid.uuid1()
-        access_token = u.hex
-
     context_dict["viewer"] = json.dumps(map_obj.viewer_json(
-        request.user, access_token, * (NON_WMS_BASE_LAYERS + [maplayer])))
+        request, * (NON_WMS_BASE_LAYERS + [maplayer])))
     context_dict["preview"] = getattr(
         settings,
         'GEONODE_CLIENT_LAYER_PREVIEW_LIBRARY',
-        'geoext')
+        'mapstore')
     context_dict["crs"] = getattr(
         settings,
         'DEFAULT_MAP_CRS',
-        'EPSG:900913')
+        'EPSG:3857')
 
     # provide bbox in EPSG:4326 for leaflet
     if context_dict["preview"] == 'leaflet':
-        srid, wkt = layer.geographic_bounding_box.split(';')
-        srid = re.findall(r'\d+', srid)
-        geom = GEOSGeometry(wkt, srid=int(srid[0]))
-        geom.transform(4326)
-        context_dict["layer_bbox"] = ','.join([str(c) for c in geom.extent])
-
+        try:
+            srid, wkt = layer.geographic_bounding_box.split(';')
+            srid = re.findall(r'\d+', srid)
+            geom = GEOSGeometry(wkt, srid=int(srid[0]))
+            geom.transform(4326)
+            context_dict["layer_bbox"] = ','.join([str(c) for c in geom.extent])
+        except Exception:
+            pass
     if layer.storeType == 'dataStore':
         links = layer.link_set.download().filter(
-            name__in=settings.DOWNLOAD_FORMATS_VECTOR)
+            Q(name__in=settings.DOWNLOAD_FORMATS_VECTOR) |
+            Q(link_type='original'))
     else:
         links = layer.link_set.download().filter(
-            name__in=settings.DOWNLOAD_FORMATS_RASTER)
+            Q(name__in=settings.DOWNLOAD_FORMATS_RASTER) |
+            Q(link_type='original'))
     links_view = [item for idx, item in enumerate(links) if
-                  item.url and 'wms' in item.url or 'gwc' in item.url]
+                  item.link_type == 'image']
     links_download = [item for idx, item in enumerate(
-        links) if item.url and 'wms' not in item.url and 'gwc' not in item.url]
+        links) if item.link_type in ('data', 'original')]
     for item in links_view:
         if item.url and access_token and 'access_token' not in item.url:
             params = {'access_token': access_token}
@@ -565,7 +706,6 @@ def layer_detail(request, layername, template='layers/layer_detail.html'):
         if item.url and access_token and 'access_token' not in item.url:
             params = {'access_token': access_token}
             item.url = Request('GET', item.url, params=params).prepare().url
-
     if request.user.has_perm('view_resourcebase', layer.get_self_resource()):
         context_dict["links"] = links_view
     if request.user.has_perm(
@@ -578,20 +718,10 @@ def layer_detail(request, layername, template='layers/layer_detail.html'):
             links = layer.link_set.download().filter(
                 name__in=settings.DOWNLOAD_FORMATS_RASTER)
         context_dict["links_download"] = links_download
-
     if settings.SOCIAL_ORIGINS:
         context_dict["social_links"] = build_social_links(request, layer)
     layers_names = layer.alternate
-    try:
-        if settings.DEFAULT_WORKSPACE and settings.DEFAULT_WORKSPACE in layers_names:
-            workspace, name = layers_names.split(':', 1)
-        else:
-            name = layers_names
-    except BaseException:
-        logger.error("Can not identify workspace type and layername")
-
     context_dict["layer_name"] = json.dumps(layers_names)
-
     try:
         # get type of layer (raster or vector)
         if layer.storeType == 'coverageStore':
@@ -601,46 +731,25 @@ def layer_detail(request, layername, template='layers/layer_detail.html'):
                 context_dict["layer_type"] = "vector_time"
             else:
                 context_dict["layer_type"] = "vector"
-
-            location = "{location}{service}".format(** {
-                'location': settings.OGC_SERVER['default']['LOCATION'],
-                'service': 'wms',
-            })
-            # get schema for specific layer
-            username = settings.OGC_SERVER['default']['USER']
-            password = settings.OGC_SERVER['default']['PASSWORD']
-            schema = get_schema(
-                location,
-                name,
-                username=username,
-                password=password)
-
-            # get the name of the column which holds the geometry
-            if 'the_geom' in schema['properties']:
-                schema['properties'].pop('the_geom', None)
-            elif 'geom' in schema['properties']:
-                schema['properties'].pop("geom", None)
-
-            # filter the schema dict based on the values of layers_attributes
-            layer_attributes_schema = []
-            for key in schema['properties'].keys():
-                layer_attributes_schema.append(key)
-
-            filtered_attributes = layer_attributes_schema
-            context_dict["schema"] = schema
-            context_dict["filtered_attributes"] = filtered_attributes
-
-    except BaseException:
+    except Exception:
         logger.error(
             "Possible error with OWSLib. Turning all available properties to string")
-
-    if settings.GEOTIFF_IO_ENABLED:
-        from geonode.contrib.geotiffio import create_geotiff_io_url
-        context_dict["link_geotiff_io"] = create_geotiff_io_url(layer, access_token)
-
     # maps owned by user needed to fill the "add to existing map section" in template
-    if request.user.is_authenticated():
+    if request.user.is_authenticated:
         context_dict["maps"] = Map.objects.filter(owner=request.user)
+        if getattr(settings, 'FAVORITE_ENABLED', False):
+            from geonode.favorite.utils import get_favorite_info
+            context_dict["favorite_info"] = get_favorite_info(request.user, layer)
+
+    if request.user.is_authenticated and (request.user.is_superuser or "change_resourcebase_permissions" in perms_list):
+        context_dict['users'] = [user for user in get_user_model().objects.all().exclude(
+            id=request.user.id).exclude(is_superuser=True)]
+        if request.user.is_superuser:
+            context_dict['groups'] = [group for group in GroupProfile.objects.all()]
+        else:
+            context_dict['groups'] = [group for group in request.user.group_list_all()]
+
+    register_event(request, 'view', layer)
     return TemplateResponse(
         request, template, context=context_dict)
 
@@ -651,24 +760,24 @@ def load_layer_data(request, template='layers/layer_detail.html'):
     context_dict = {}
     data_dict = json.loads(request.POST.get('json_data'))
     layername = data_dict['layer_name']
-    filtered_attributes = [x for x in data_dict['filtered_attributes'].split(
-        ',') if '/load_layer_data' not in x]
-    workspace, name = layername.split(':')
+    filtered_attributes = ''
+    if not isinstance(data_dict['filtered_attributes'], string_types):
+        filtered_attributes = [x for x in data_dict['filtered_attributes'] if '/load_layer_data' not in x]
+    name = layername if ':' not in layername else layername.split(':')[1]
     location = "{location}{service}".format(** {
         'location': settings.OGC_SERVER['default']['LOCATION'],
         'service': 'wms',
     })
+    access_token = None
+    if request and 'access_token' in request.session:
+        access_token = request.session['access_token']
+    if access_token and 'access_token' not in location:
+        location = '%s?access_token=%s' % (location, access_token)
 
     try:
-        # TODO: should be improved by using OAuth2 token (or at least user
-        # related to it) instead of super-powers
-        username = settings.OGC_SERVER['default']['USER']
-        password = settings.OGC_SERVER['default']['PASSWORD']
         wfs = WebFeatureService(
             location,
-            version='1.1.0',
-            username=username,
-            password=password)
+            version='1.1.0')
         response = wfs.getfeature(
             typename=name,
             propertyname=filtered_attributes,
@@ -684,10 +793,11 @@ def load_layer_data(request, template='layers/layer_detail.html'):
 
         # loop the dictionary based on the values on the list and add the properties
         # in the dictionary (if doesn't exist) together with the value
+        from collections import Iterable
         for i in range(len(decoded_features)):
-            for key, value in decoded_features[i]['properties'].iteritems():
+            for key, value in decoded_features[i]['properties'].items():
                 if value != '' and isinstance(value, (string_types, int, float)) and (
-                        '/load_layer_data' not in value):
+                        (isinstance(value, Iterable) and '/load_layer_data' not in value) or value):
                     properties[key].append(value)
 
         for key in properties:
@@ -695,7 +805,7 @@ def load_layer_data(request, template='layers/layer_detail.html'):
             properties[key].sort()
 
         context_dict["feature_properties"] = properties
-    except BaseException:
+    except Exception:
         import traceback
         traceback.print_exc()
         logger.error("Possible error with OWSLib.")
@@ -732,6 +842,7 @@ def layer_feature_catalogue(
         'attributes': attributes,
         'metadata': settings.PYCSW['CONFIGURATION']['metadata:main']
     }
+    register_event(request, 'view', layer)
     return render(
         request,
         template,
@@ -756,7 +867,11 @@ def layer_metadata(
         extra=0,
         form=LayerAttributeForm,
     )
+
     topic_category = layer.category
+
+    # Add metadata_author or poc if missing
+    layer.add_missing_metadata_author_or_poc()
 
     poc = layer.poc
     metadata_author = layer.metadata_author
@@ -772,25 +887,28 @@ def layer_metadata(
             'type': 'name',
             'properties': layer.srid
         }
-    config["srs"] = getattr(settings, 'DEFAULT_MAP_CRS', 'EPSG:900913')
-    config["bbox"] = bbox if config["srs"] != 'EPSG:900913' \
+    config["srs"] = getattr(settings, 'DEFAULT_MAP_CRS', 'EPSG:3857')
+    config["bbox"] = bbox if config["srs"] != 'EPSG:3857' \
         else llbbox_to_mercator([float(coord) for coord in bbox])
     config["title"] = layer.title
     config["queryable"] = True
 
     if layer.storeType == "remoteStore":
         service = layer.remote_service
-        source_params = {
-            "ptype": service.ptype,
-            "remote": True,
-            "url": service.service_url,
-            "name": service.name,
-            "title": "[R] %s" % service.title}
+        source_params = {}
+        if service.type in ('REST_MAP', 'REST_IMG'):
+            source_params = {
+                "ptype": service.ptype,
+                "remote": True,
+                "url": service.service_url,
+                "name": service.name,
+                "title": "[R] %s" % service.title}
         maplayer = GXPLayer(
             name=layer.alternate,
             ows_url=layer.ows_url,
             layer_params=json.dumps(config),
-            source_params=json.dumps(source_params))
+            source_params=json.dumps(source_params)
+        )
     else:
         maplayer = GXPLayer(
             name=layer.alternate,
@@ -808,7 +926,7 @@ def layer_metadata(
         projection=getattr(
             settings,
             'DEFAULT_MAP_CRS',
-            'EPSG:900913'))
+            'EPSG:3857'))
 
     NON_WMS_BASE_LAYERS = [
         la for la in default_map_config(request)[1] if la.ows_url is None]
@@ -840,10 +958,9 @@ def layer_metadata(
             prefix="layer_attribute_set",
             queryset=Attribute.objects.order_by('display_order'))
         category_form = CategoryForm(request.POST, prefix="category_choice_field", initial=int(
-            request.POST["category_choice_field"]) if "category_choice_field" in request.POST else None)
-        tkeywords_form = TKeywordForm(
-            request.POST,
-            prefix="tkeywords")
+            request.POST["category_choice_field"]) if "category_choice_field" in request.POST and
+            request.POST["category_choice_field"] else None)
+        tkeywords_form = TKeywordForm(request.POST)
     else:
         layer_form = LayerForm(instance=layer, prefix="resource")
         attribute_form = layer_attribute_set(
@@ -854,35 +971,33 @@ def layer_metadata(
             prefix="category_choice_field",
             initial=topic_category.id if topic_category else None)
 
-        # Keywords from THESAURI management
+        # Keywords from THESAURUS management
         layer_tkeywords = layer.tkeywords.all()
         tkeywords_list = ''
         lang = 'en'  # TODO: use user's language
         if layer_tkeywords and len(layer_tkeywords) > 0:
             tkeywords_ids = layer_tkeywords.values_list('id', flat=True)
-            if hasattr(settings, 'THESAURI'):
-                for el in settings.THESAURI:
-                    thesaurus_name = el['name']
-                    try:
-                        t = Thesaurus.objects.get(identifier=thesaurus_name)
-                        for tk in t.thesaurus.filter(pk__in=tkeywords_ids):
-                            tkl = tk.keyword.filter(lang=lang)
-                            if len(tkl) > 0:
-                                tkl_ids = ",".join(
-                                    map(str, tkl.values_list('id', flat=True)))
-                                tkeywords_list += "," + \
-                                    tkl_ids if len(
-                                        tkeywords_list) > 0 else tkl_ids
-                    except BaseException:
-                        tb = traceback.format_exc()
-                        logger.error(tb)
+            if hasattr(settings, 'THESAURUS') and settings.THESAURUS:
+                el = settings.THESAURUS
+                thesaurus_name = el['name']
+                try:
+                    t = Thesaurus.objects.get(identifier=thesaurus_name)
+                    for tk in t.thesaurus.filter(pk__in=tkeywords_ids):
+                        tkl = tk.keyword.filter(lang=lang)
+                        if len(tkl) > 0:
+                            tkl_ids = ",".join(
+                                map(str, tkl.values_list('id', flat=True)))
+                            tkeywords_list += "," + \
+                                tkl_ids if len(
+                                    tkeywords_list) > 0 else tkl_ids
+                except Exception:
+                    tb = traceback.format_exc()
+                    logger.error(tb)
 
-        tkeywords_form = TKeywordForm(
-            prefix="tkeywords",
-            initial={'tkeywords': tkeywords_list})
+        tkeywords_form = TKeywordForm(instance=layer)
 
     if request.method == "POST" and layer_form.is_valid() and attribute_form.is_valid(
-    ) and category_form.is_valid() and tkeywords_form.is_valid():
+    ) and category_form.is_valid():
         new_poc = layer_form.cleaned_data['poc']
         new_author = layer_form.cleaned_data['metadata_author']
 
@@ -922,14 +1037,17 @@ def layer_metadata(
             if author_form.has_changed and author_form.is_valid():
                 new_author = author_form.save()
 
-        new_category = TopicCategory.objects.get(
-            id=category_form.cleaned_data['category_choice_field'])
+        new_category = None
+        if category_form and 'category_choice_field' in category_form.cleaned_data and\
+        category_form.cleaned_data['category_choice_field']:
+            new_category = TopicCategory.objects.get(
+                id=int(category_form.cleaned_data['category_choice_field']))
 
         for form in attribute_form.cleaned_data:
             la = Attribute.objects.get(id=int(form['id'].id))
             la.description = form["description"]
             la.attribute_label = form["attribute_label"]
-            la.visible = form["visible"]
+            la.visible = True if form["attribute_label"] else False  # form["visible"]
             la.display_order = form["display_order"]
             la.save()
 
@@ -940,36 +1058,22 @@ def layer_metadata(
                 layer.metadata_author = new_author
 
         new_keywords = layer_form.cleaned_data['keywords']
-        if new_keywords is not None:
-            layer.keywords.clear()
-            layer.keywords.add(*new_keywords)
-
         new_regions = [x.strip() for x in layer_form.cleaned_data['regions']]
-        if new_regions is not None:
-            layer.regions.clear()
+
+        layer.keywords.clear()
+        if new_keywords:
+            layer.keywords.add(*new_keywords)
+        layer.regions.clear()
+        if new_regions:
             layer.regions.add(*new_regions)
+        layer.category = new_category
+        layer.save()
 
-        the_layer = layer_form.instance
-        the_layer.save()
+        up_sessions = UploadSession.objects.filter(layer=layer)
+        if up_sessions.count() > 0 and up_sessions[0].user != layer.owner:
+            up_sessions.update(user=layer.owner)
 
-        up_sessions = UploadSession.objects.filter(layer=the_layer.id)
-        if up_sessions.count() > 0 and up_sessions[0].user != the_layer.owner:
-            up_sessions.update(user=the_layer.owner)
-
-        if new_category is not None:
-            Layer.objects.filter(id=the_layer.id).update(
-                category=new_category
-            )
-
-        if getattr(settings, 'SLACK_ENABLED', False):
-            try:
-                from geonode.contrib.slack.utils import build_slack_message_layer, send_slack_messages
-                send_slack_messages(
-                    build_slack_message_layer(
-                        "layer_edit", the_layer))
-            except BaseException:
-                logger.error("Could not send slack message.")
-
+        register_event(request, EventType.EVENT_CHANGE_METADATA, layer)
         if not ajax:
             return HttpResponseRedirect(
                 reverse(
@@ -981,35 +1085,18 @@ def layer_metadata(
         message = layer.alternate
 
         try:
-            # Keywords from THESAURI management
-            tkeywords_to_add = []
-            tkeywords_cleaned = tkeywords_form.clean()
-            if tkeywords_cleaned and len(tkeywords_cleaned) > 0:
-                tkeywords_ids = []
-                for i, val in enumerate(tkeywords_cleaned):
-                    try:
-                        cleaned_data = [value for key, value in tkeywords_cleaned[i].items(
-                        ) if 'tkeywords-tkeywords' in key.lower() and 'autocomplete' not in key.lower()]
-                        tkeywords_ids.extend(map(int, cleaned_data[0]))
-                    except BaseException:
-                        pass
+            if not tkeywords_form.is_valid():
+                return HttpResponse(json.dumps({'message': "Invalid thesaurus keywords"}, status_code=400))
 
-                if hasattr(settings, 'THESAURI'):
-                    for el in settings.THESAURI:
-                        thesaurus_name = el['name']
-                        try:
-                            t = Thesaurus.objects.get(
-                                identifier=thesaurus_name)
-                            for tk in t.thesaurus.all():
-                                tkl = tk.keyword.filter(pk__in=tkeywords_ids)
-                                if len(tkl) > 0:
-                                    tkeywords_to_add.append(tkl[0].keyword_id)
-                        except BaseException:
-                            tb = traceback.format_exc()
-                            logger.error(tb)
+            tkeywords_data = tkeywords_form.cleaned_data['tkeywords']
 
-            layer.tkeywords.add(*tkeywords_to_add)
-        except BaseException:
+            thesaurus_setting = getattr(settings, 'THESAURUS', None)
+            if thesaurus_setting:
+                tkeywords_data = tkeywords_data.filter(
+                    thesaurus__identifier=thesaurus_setting['name']
+                )
+                layer.tkeywords = tkeywords_data
+        except Exception:
             tb = traceback.format_exc()
             logger.error(tb)
 
@@ -1017,15 +1104,16 @@ def layer_metadata(
 
     if settings.ADMIN_MODERATE_UPLOADS:
         if not request.user.is_superuser:
-            layer_form.fields['is_published'].widget.attrs.update(
-                {'disabled': 'true'})
+            if settings.RESOURCE_PUBLISHING:
+                layer_form.fields['is_published'].widget.attrs.update(
+                    {'disabled': 'true'})
 
             can_change_metadata = request.user.has_perm(
                 'change_resourcebase_metadata',
                 layer.get_self_resource())
             try:
                 is_manager = request.user.groupmember_set.all().filter(role='manager').exists()
-            except BaseException:
+            except Exception:
                 is_manager = False
             if not is_manager or not can_change_metadata:
                 layer_form.fields['is_approved'].widget.attrs.update(
@@ -1047,18 +1135,8 @@ def layer_metadata(
         author_form = ProfileForm(prefix="author")
         author_form.hidden = False
 
-    if 'access_token' in request.session:
-        access_token = request.session['access_token']
-    else:
-        u = uuid.uuid1()
-        access_token = u.hex
-
     viewer = json.dumps(map_obj.viewer_json(
-        request.user, access_token, * (NON_WMS_BASE_LAYERS + [maplayer])))
-
-    metadataxsl = False
-    if "geonode.contrib.metadataxsl" in settings.INSTALLED_APPS:
-        metadataxsl = True
+        request, * (NON_WMS_BASE_LAYERS + [maplayer])))
 
     metadata_author_groups = []
     if request.user.is_superuser or request.user.is_staff:
@@ -1067,13 +1145,15 @@ def layer_metadata(
         try:
             all_metadata_author_groups = chain(
                 request.user.group_list_all().distinct(),
-                GroupProfile.objects.exclude(access="private").exclude(access="public-invite"))
-        except BaseException:
+                GroupProfile.objects.exclude(
+                    access="private").exclude(access="public-invite"))
+        except Exception:
             all_metadata_author_groups = GroupProfile.objects.exclude(
                 access="private").exclude(access="public-invite")
         [metadata_author_groups.append(item) for item in all_metadata_author_groups
             if item not in metadata_author_groups]
 
+    register_event(request, 'view_metadata', layer)
     return render(request, template, context={
         "resource": layer,
         "layer": layer,
@@ -1084,16 +1164,16 @@ def layer_metadata(
         "category_form": category_form,
         "tkeywords_form": tkeywords_form,
         "viewer": viewer,
-        "preview": getattr(settings, 'GEONODE_CLIENT_LAYER_PREVIEW_LIBRARY', 'geoext'),
-        "crs": getattr(settings, 'DEFAULT_MAP_CRS', 'EPSG:900913'),
-        "metadataxsl": metadataxsl,
+        "preview": getattr(settings, 'GEONODE_CLIENT_LAYER_PREVIEW_LIBRARY', 'mapstore'),
+        "crs": getattr(settings, 'DEFAULT_MAP_CRS', 'EPSG:3857'),
+        "metadataxsl": getattr(settings, 'GEONODE_CATALOGUE_METADATA_XSL', True),
         "freetext_readonly": getattr(
             settings,
             'FREETEXT_KEYWORDS_READONLY',
             False),
         "metadata_author_groups": metadata_author_groups,
-        "GROUP_MANDATORY_RESOURCES":
-            getattr(settings, 'GROUP_MANDATORY_RESOURCES', False),
+        "TOPICCATEGORY_MANDATORY": getattr(settings, 'TOPICCATEGORY_MANDATORY', False),
+        "GROUP_MANDATORY_RESOURCES": getattr(settings, 'GROUP_MANDATORY_RESOURCES', False),
     })
 
 
@@ -1109,16 +1189,13 @@ def layer_metadata_advanced(request, layername):
 def layer_change_poc(request, ids, template='layers/layer_change_poc.html'):
     layers = Layer.objects.filter(id__in=ids.split('_'))
 
-    if settings.MONITORING_ENABLED:
-        for l in layers:
-            if hasattr(l, 'alternate'):
-                request.add_resource('layer', l.alternate)
     if request.method == 'POST':
         form = PocForm(request.POST)
         if form.is_valid():
             for layer in layers:
                 layer.poc = form.cleaned_data['contact']
                 layer.save()
+
             # Process the data in form.cleaned_data
             # ...
             # Redirect after POST
@@ -1140,13 +1217,12 @@ def layer_replace(request, layername, template='layers/layer_replace.html'):
     if request.method == 'GET':
         ctx = {
             'charsets': CHARSETS,
-            'layer': layer,
+            'resource': layer,
             'is_featuretype': layer.is_vector(),
             'is_layer': True,
         }
         return render(request, template, context=ctx)
     elif request.method == 'POST':
-
         form = LayerUploadForm(request.POST, request.FILES)
         tempdir = None
         out = {}
@@ -1165,8 +1241,7 @@ def layer_replace(request, layername, template='layers/layer_replace.html'):
                 else:
                     if check_ogc_backend(geoserver.BACKEND_PACKAGE):
                         # delete geoserver's store before upload
-                        cat = gs_catalog
-                        cascading_delete(cat, layer.typename)
+                        # cascading_delete(gs_catalog, layer.alternate)
                         out['ogc_backend'] = geoserver.BACKEND_PACKAGE
                     elif check_ogc_backend(qgis_server.BACKEND_PACKAGE):
                         try:
@@ -1179,20 +1254,31 @@ def layer_replace(request, layername, template='layers/layer_replace.html'):
 
                     saved_layer = file_upload(
                         base_file,
+                        layer=layer,
+                        title=layer.title,
+                        abstract=layer.abstract,
+                        is_approved=layer.is_approved,
+                        is_published=layer.is_published,
                         name=layer.name,
-                        user=request.user,
+                        user=layer.owner,
+                        # user=request.user,
+                        license=layer.license.name if layer.license else None,
+                        category=layer.category,
+                        keywords=list(layer.keywords.all()),
+                        regions=list(layer.regions.values_list('name', flat=True)),
+                        # date=layer.date,
                         overwrite=True,
                         charset=form.cleaned_data["charset"],
                     )
+
                     out['success'] = True
                     out['url'] = reverse(
                         'layer_detail', args=[
                             saved_layer.service_typename])
             except Exception as e:
                 logger.exception(e)
-                tb = traceback.format_exc()
                 out['success'] = False
-                out['errors'] = str(tb)
+                out['errors'] = str(e)
             finally:
                 if tempdir is not None:
                     shutil.rmtree(tempdir)
@@ -1206,6 +1292,7 @@ def layer_replace(request, layername, template='layers/layer_replace.html'):
 
         if out['success']:
             status_code = 200
+            register_event(request, 'change', layer)
         else:
             status_code = 400
         return HttpResponse(
@@ -1229,7 +1316,20 @@ def layer_remove(request, layername, template='layers/layer_remove.html'):
     if (request.method == 'POST'):
         try:
             with transaction.atomic():
-                delete_layer.delay(object_id=layer.id)
+                # Using Tastypie
+                # from geonode.api.resourcebase_api import LayerResource
+                # res = LayerResource()
+                # request_bundle = res.build_bundle(request=request)
+                # layer_bundle = res.build_bundle(request=request, obj=layer)
+                # layer_json = res.serialize(None,
+                #                            res.full_dehydrate(layer_bundle),
+                #                            "application/json")
+                # delete_layer.delay(instance=layer_json)
+                result = delete_layer.delay(layer_id=layer.id)
+                result.wait(10)
+        except TimeoutError:
+            # traceback.print_exc()
+            pass
         except Exception as e:
             traceback.print_exc()
             message = '{0}: {1}.'.format(
@@ -1243,6 +1343,8 @@ def layer_remove(request, layername, template='layers/layer_remove.html'):
             messages.error(request, message)
             return render(
                 request, template, context={"layer": layer})
+
+        register_event(request, 'remove', layer)
         return HttpResponseRedirect(reverse("layer_browse"))
     else:
         return HttpResponse("Not allowed", status=403)
@@ -1294,35 +1396,54 @@ def layer_granule_remove(
         return HttpResponse("Not allowed", status=403)
 
 
+@require_http_methods(["POST"])
 def layer_thumbnail(request, layername):
-    if request.method == 'POST':
-        layer_obj = _resolve_layer(request, layername)
+    layer_obj = _resolve_layer(request, layername)
 
+    try:
         try:
-            try:
-                preview = json.loads(request.body).get('preview', None)
-            except BaseException:
-                preview = None
+            preview = json.loads(request.body).get('preview', None)
+        except Exception as e:
+            logger.debug(e)
+            preview = None
 
-            if preview and preview == 'react':
-                format, image = json.loads(
-                    request.body)['image'].split(';base64,')
-                image = base64.b64decode(image)
-            else:
+        if preview and preview == 'react':
+            format, image = json.loads(
+                request.body)['image'].split(';base64,')
+            image = base64.b64decode(image)
+        else:
+            image = None
+            try:
+                image = _prepare_thumbnail_body_from_opts(
+                    request.body, request=request)
+            except Exception as e:
+                logger.debug(e)
                 image = _render_thumbnail(request.body)
 
-            if not image:
-                return
-            filename = "layer-%s-thumb.png" % layer_obj.uuid
-            layer_obj.save_thumbnail(filename, image)
+        is_image = False
+        if image:
+            import imghdr
+            for th in imghdr.tests:
+                is_image = th(image, None)
+                if is_image:
+                    break
 
-            return HttpResponse('Thumbnail saved')
-        except BaseException:
+        if not is_image:
             return HttpResponse(
-                content='error saving thumbnail',
+                content=_('couldn\'t generate thumbnail'),
                 status=500,
                 content_type='text/plain'
             )
+        filename = "layer-%s-thumb.png" % layer_obj.uuid
+        layer_obj.save_thumbnail(filename, image)
+
+        return HttpResponse('Thumbnail saved')
+    except Exception as e:
+        return HttpResponse(
+            content='error saving thumbnail: %s' % str(e),
+            status=500,
+            content_type='text/plain'
+        )
 
 
 def get_layer(request, layername):
@@ -1372,10 +1493,17 @@ def layer_metadata_detail(
             group = GroupProfile.objects.get(slug=layer.group.name)
         except GroupProfile.DoesNotExist:
             group = None
+    site_url = settings.SITEURL.rstrip('/') if settings.SITEURL.startswith('http') else settings.SITEURL
+
+    register_event(request, 'view_metadata', layer)
+
     return render(request, template, context={
         "resource": layer,
+        "perms_list": get_perms(
+            request.user,
+            layer.get_self_resource()) + get_perms(request.user, layer),
         "group": group,
-        'SITEURL': settings.SITEURL[:-1]
+        'SITEURL': site_url
     })
 
 
@@ -1388,10 +1516,11 @@ def layer_metadata_upload(
         layername,
         'base.change_resourcebase',
         _PERMISSION_MSG_METADATA)
+    site_url = settings.SITEURL.rstrip('/') if settings.SITEURL.startswith('http') else settings.SITEURL
     return render(request, template, context={
         "resource": layer,
         "layer": layer,
-        'SITEURL': settings.SITEURL[:-1]
+        'SITEURL': site_url
     })
 
 
@@ -1404,11 +1533,19 @@ def layer_sld_upload(
         layername,
         'base.change_resourcebase',
         _PERMISSION_MSG_METADATA)
+    site_url = settings.SITEURL.rstrip('/') if settings.SITEURL.startswith('http') else settings.SITEURL
     return render(request, template, context={
         "resource": layer,
         "layer": layer,
-        'SITEURL': settings.SITEURL[:-1]
+        'SITEURL': site_url
     })
+
+
+def layer_sld_edit(
+        request,
+        layername,
+        template='layers/layer_style_edit.html'):
+    return layer_detail(request, layername, template)
 
 
 @login_required
@@ -1416,7 +1553,110 @@ def layer_batch_metadata(request, ids):
     return batch_modify(request, ids, 'Layer')
 
 
+def batch_permissions(request, ids, model):
+    Resource = None
+    if model == 'Layer':
+        Resource = Layer
+    if not Resource or not request.user.is_superuser:
+        raise PermissionDenied
+
+    template = 'base/batch_permissions.html'
+
+    if "cancel" in request.POST:
+        return HttpResponseRedirect(
+            '/admin/{model}s/{model}/'.format(model=model.lower())
+        )
+
+    if request.method == 'POST':
+        form = BatchPermissionsForm(request.POST)
+        if form.is_valid():
+            _data = form.cleaned_data
+            resources_names = []
+            for resource in Resource.objects.filter(id__in=ids.split(',')):
+                resources_names.append(resource.name)
+            users_usernames = [_data['user'].username, ] if _data['user'] else None
+            groups_names = [_data['group'].name, ] if _data['group'] else None
+            if users_usernames and 'AnonymousUser' in users_usernames and \
+            (not groups_names or 'anonymous' not in groups_names):
+                if not groups_names:
+                    groups_names = []
+                groups_names.append('anonymous')
+            if groups_names and 'anonymous' in groups_names and \
+            (not users_usernames or 'AnonymousUser' not in users_usernames):
+                if not users_usernames:
+                    users_usernames = []
+                users_usernames.append('AnonymousUser')
+            delete_flag = _data['mode'] == 'unset'
+            permissions_names = _data['permission_type']
+            if permissions_names:
+                for permissions_name in permissions_names:
+                    set_layers_permissions(
+                        permissions_name, resources_names, users_usernames, groups_names, delete_flag
+                    )
+            return HttpResponseRedirect(
+                '/admin/{model}s/{model}/'.format(model=model.lower())
+            )
+        return render(
+            request,
+            template,
+            context={
+                'form': form,
+                'ids': ids,
+                'model': model,
+            }
+        )
+
+    form = BatchPermissionsForm(
+        {
+            'permission_type': ('r', ),
+            'mode': 'set'
+        })
+    return render(
+        request,
+        template,
+        context={
+            'form': form,
+            'ids': ids,
+            'model': model,
+        }
+    )
+
+
+@login_required
+def layer_batch_permissions(request, ids):
+    return batch_permissions(request, ids, 'Layer')
+
+
 def layer_view_counter(layer_id, viewer):
-    l = Layer.objects.get(id=layer_id)
-    u = get_user_model().objects.get(username=viewer)
-    l.view_count_up(u, do_local=True)
+    _l = Layer.objects.get(id=layer_id)
+    _u = get_user_model().objects.get(username=viewer)
+    _l.view_count_up(_u, do_local=True)
+
+
+class LayerAutocomplete(autocomplete.Select2QuerySetView):
+
+    # Overriding both result label methods to ensure autocomplete labels display without 'geonode:' prefix
+    def get_selected_result_label(self, result):
+        """Return the label of a selected result."""
+        return self.get_result_label(result)
+
+    def get_result_label(self, result):
+        """Return the label of a selected result."""
+        return six.text_type(result.title)
+
+    def get_queryset(self):
+        request = self.request
+        permitted = get_objects_for_user(
+            request.user,
+            'base.view_resourcebase')
+        qs = Layer.objects.all().filter(id__in=permitted)
+
+        if self.q:
+            qs = qs.filter(title__icontains=self.q)
+
+        return get_visible_resources(
+            qs,
+            request.user if request else None,
+            admin_approval_required=settings.ADMIN_MODERATE_UPLOADS,
+            unpublished_not_visible=settings.RESOURCE_PUBLISHING,
+            private_groups_not_visibile=settings.GROUP_PRIVATE_RESOURCES)

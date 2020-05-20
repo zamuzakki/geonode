@@ -18,26 +18,19 @@
 #
 #########################################################################
 
+from geonode.base.forms import ResourceBaseForm
 import os
 import tempfile
 import zipfile
-from autocomplete_light.registry import autodiscover
 
 from django import forms
 
 from geonode import geoserver, qgis_server
 from geonode.utils import check_ogc_backend
 
-try:
-    import json
-except ImportError:
-    from django.utils import simplejson as json
+import json
 from geonode.utils import unzip_file
 from geonode.layers.models import Layer, Attribute
-
-autodiscover() # flake8: noqa
-
-from geonode.base.forms import ResourceBaseForm
 
 
 class JSONField(forms.CharField):
@@ -67,7 +60,7 @@ class LayerForm(ResourceBaseForm):
         # }
 
     def __init__(self, *args, **kwargs):
-        super(ResourceBaseForm, self).__init__(*args, **kwargs)
+        super(LayerForm, self).__init__(*args, **kwargs)
         for field in self.fields:
             help_text = self.fields[field].help_text
             self.fields[field].help_text = None
@@ -157,7 +150,7 @@ class LayerUploadForm(forms.Form):
                     sld_file = cleaned["sld_file"].name
 
         if not cleaned["metadata_upload_form"] and not cleaned["style_upload_form"] and base_ext.lower() not in (
-                ".shp", ".tif", ".tiff", ".geotif", ".geotiff", ".asc", ".sld"):
+                ".shp", ".tif", ".tiff", ".geotif", ".geotiff", ".asc", ".sld", ".kml", ".kmz"):
             raise forms.ValidationError(
                 "Only Shapefiles, GeoTiffs, and ASCIIs are supported. You "
                 "uploaded a %s file" % base_ext)
@@ -201,14 +194,11 @@ class LayerUploadForm(forms.Form):
                         # overwrite as file.shp
                         if cleaned.get("sld_file"):
                             cleaned["sld_file"].name = '%s.sld' % base_name
-
         return cleaned
 
     def write_files(self):
-
         absolute_base_file = None
         tempdir = tempfile.mkdtemp()
-
         if zipfile.is_zipfile(self.cleaned_data['base_file']):
             absolute_base_file = unzip_file(self.cleaned_data['base_file'],
                                             '.shp', tempdir=tempdir)
@@ -255,12 +245,12 @@ class NewLayerUploadForm(LayerUploadForm):
 
 
 class LayerDescriptionForm(forms.Form):
-    title = forms.CharField(300)
-    abstract = forms.CharField(2000, widget=forms.Textarea, required=False)
-    supplemental_information = forms.CharField(2000, widget=forms.Textarea, required=False)
-    data_quality_statement = forms.CharField(2000, widget=forms.Textarea, required=False)
-    purpose = forms.CharField(500, required=False)
-    keywords = forms.CharField(500, required=False)
+    title = forms.CharField(max_length=300, required=True)
+    abstract = forms.CharField(max_length=2000, widget=forms.Textarea, required=False)
+    supplemental_information = forms.CharField(max_length=2000, widget=forms.Textarea, required=False)
+    data_quality_statement = forms.CharField(max_length=2000, widget=forms.Textarea, required=False)
+    purpose = forms.CharField(max_length=500, required=False)
+    keywords = forms.CharField(max_length=500, required=False)
 
 
 class LayerAttributeForm(forms.ModelForm):
