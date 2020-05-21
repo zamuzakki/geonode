@@ -499,7 +499,8 @@
             {% endif %}
           </ul>
         </div>
-    <div class="col-md-2">
+        <div class="col-md-2">
+          {% if user.is_authenticated %}
           <ul class="list-unstyled">
             <li>{% trans "About" %}</li>
             <li><a href="{% url "profile_browse" %}">{% trans "People" %}</a></li>
@@ -515,6 +516,7 @@
             <li><a href="{% url "group_create" %}">{% trans "Create Group" %}</a></li>
             {% endif %}
           </ul>
+          {% endif %}
         </div>
 
         <div class="col-md-6 text-right">
