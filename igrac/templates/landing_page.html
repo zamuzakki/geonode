@@ -24,7 +24,7 @@
         <div class="row">
             {% for map in maps %}
                 <div class="col-lg-4 map-item">
-                    <a class="map-item-wrappper col-lg-12" href="{{ map.detail_url }}">
+                    <a class="map-item-wrappper col-lg-12" href="{% url 'map_view' mapid=map.id %}">
                         <div class="col-lg-8">
                             <img src="{{ map.thumbnail_url }}" />
                         </div>
