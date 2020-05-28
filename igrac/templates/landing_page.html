@@ -23,7 +23,7 @@
         <div class="row">
             {% for map in maps %}
                 <div class="col-lg-4 map-item">
-                    <a class="map-item-wrappper col-lg-12" href="{% url 'map_view_slug' slug=map.slug %}">
+                    <a class="map-item-wrappper col-lg-12" href="{% url 'map_view_slug' slug=map.slug %}" data-toggle="tooltip" data-placement="top" title="{{ map.map.title }}">
                         <div class="col-lg-6">
                             <img src="{{ map.map.thumbnail_url }}" />
                         </div>
