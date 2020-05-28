@@ -14,7 +14,7 @@ urlpatterns = [
     url(r'^$',
         view=HomeView.as_view(),
         name='home_igrac'),
-    url(r'^maps/view/(?P<slug>[^/]+)$',
+    url(r'^view/(?P<slug>[^/]+)$',
         view=map_view_with_slug,
         name='map_view_slug'),
     url(r'^cms/', include(wagtailadmin_urls)),
