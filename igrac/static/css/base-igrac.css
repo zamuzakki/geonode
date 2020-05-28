@@ -1,8 +1,17 @@
 .igrac-home #wrap {
     margin-top: 10px;
-    height: 100%;
+    min-height: 100vh;
+	  height: auto;
+}
+
+.igrac-wagtail #wrap {
+    margin-top: 10px;
     min-height: 100vh;
     height: auto;
+}
+
+.igrac-wagtail #wrap * {
+    list-style-type: disc;
 }
 
 .map-wrapper {
