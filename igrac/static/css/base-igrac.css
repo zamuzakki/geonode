@@ -31,6 +31,8 @@
     box-shadow: 3px 5px 5px lightgrey;
     transition: transform 0.2s;
     color: black;
+    height: min-content;
+    min-height: 120px;
 }
 
 .map-item-wrappper .map-abstract {
