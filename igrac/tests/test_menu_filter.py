@@ -11,14 +11,14 @@ class BaseTest(TestCase):
     def setUp(self):
         self.url = _('home')
         self.object_ids = create_models()
-        self.user, _ = get_user_model().objects.get_or_create(
+        self.user, created = get_user_model().objects.get_or_create(
             username='user', first_name='user'
         )
         self.user.set_password('user')
         self.user.save()
 
-        group_1 = Group.objects.get_or_create(name='Group 1')
-        group_2 = Group.objects.get_or_create(name='Group 2')
+        group_1, created = Group.objects.get_or_create(name='Group 1')
+        group_2, created = Group.objects.get_or_create(name='Group 2')
         self.user.groups.add(group_1)
         self.user.groups.add(group_2)
         logging.debug(" Test setUp. Creating User ")
@@ -110,9 +110,9 @@ class TestAddRemoteService(BaseTest):
     def test_hidden_add_remote_service_for_unregistered_user(self):
         response = self.clien.get(self.url)
         self.assertEqual(response.status_code, 200)
-        self.assertNotIn(response.content, 'Add Remote Service'
+        self.assertNotIn(response.content, 'Add Remote Service')
 
-    def test_add_remote_service_URL_for_unregistered_user(self):
+    def test_add_remote_service_url_for_unregistered_user(self):
         """
         Add Remote Service URLs should not be accessible to unregistered user.
         Unregistered user will be redirected to login page when they access the URLs
